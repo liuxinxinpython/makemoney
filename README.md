@@ -1,148 +1,74 @@
 ﻿# A股K线分析工具
 
-一个基于 PyQt5 与 TradingView 嵌入式图表的现代化股票分析应用程序，专注于 ZigZag 波峰波谷策略，并内置策略研究工作台、批量扫描和轻量回测能力。
+一个基于 PyQt5 与 TradingView 模板的桌面端分析工具，用于浏览本地 SQLite 中的 A 股日线数据，并围绕 ZigZag 波峰波谷策略提供策略研究工作台、批量扫描与轻量回测能力。
 
-## ✨ 功能特性
+## 功能亮点
 
-### 📊 核心功能
-- **股票数据可视化** - 使用 TradingView HTML 模板渲染交互式 K 线图
-- **大数据支持** - 面向 4GB+ SQLite 数据库，配合智能缓存保障加载速度
-- **实时进度反馈** - 数据导入、策略执行均显示进度条与状态提示
+- **TradingView 嵌入式图表**：通过自定义 HTML 模板在 QWebEngine 中渲染交互式 K 线。
+- **异步数据导入**：Excel/CSV → SQLite 全流程在后台线程完成，支持追加或重建模式并实时输出日志。
+- **大库加载优化**：股票列表和 K 线数据使用后台 worker + 缓存策略，4GB 级数据库仍可流畅浏览。
+- **策略工作台**：右侧 Dock 面板集中 ZigZag 参数配置、即时预览、批量扫描和历史回测，结果可直接回填主图。
+- **统一 ZigZag 实现**：所有策略分析均由 `zigzag_wave_peaks_valleys` 提供，便于调参和维护。
 
-### 🎯 技术分析
-- **ZigZag 波峰波谷检测** - 统一的 ZigZag 算法，支持自定义最小反转幅度
-- **策略结果可视化** - 波峰/波谷、状态标签直接绘制在主图上
-- **策略参数即改即用** - 通过工作台调整参数后即可触发即时预览
+## 运行环境
 
-### 🧠 策略研究工作台
-- **可停靠右侧面板** - 通过 `视图 > 显示策略工作台` 控制显示/隐藏
-- **策略卡片区** - 展示描述、输入参数与默认配置
-- **研究工具集** - 即时预览、批量扫描、历史回测三合一
-- **与主图打通** - 预览/扫描的选中结果可回填到主界面
+- Windows 10+（推荐，开发环境）或支持 PyQt5 的其他桌面系统
+- Python 3.9 及以上
+- 依赖：`PyQt5`, `PyQtWebEngine`, `pandas`, `numpy`, `scipy`, `akshare`（可选，用于补数）
 
-### 🛠️ 数据管理
-- **Excel/CSV 导入器** - 支持全量或追加同步至 SQLite
-- **数据库切换** - 即时更换目标数据库并刷新股票列表
-- **缓存与并发** - 后台线程异步加载，避免 UI 卡顿
+## 快速开始
 
-## 📦 依赖包
+```bash
+git clone https://github.com/liuxinxinpython/makemoney.git
+cd makemoney
+python -m venv .venv
+.venv\Scripts\activate        # Linux/macOS 请改为 source .venv/bin/activate
+pip install PyQt5 PyQtWebEngine pandas numpy scipy akshare
+python main.py
+```
 
-### 核心依赖
-- `PyQt5` - 主窗体、菜单、Dock 窗口与线程管理
-- `pandas` / `numpy` - 数据处理与指标计算
-- `scipy` - ZigZag 策略使用的信号处理工具
-- `akshare`（可选）- 若需补充行情，可选安装
+如需使用 Excel/CSV 导入功能，请确保 `src/data/import_excel_to_sqlite.py` 中的依赖均可导入（如 `openpyxl`、`pandas`）。
 
-## 🚀 安装和运行
+## 使用流程
 
-### 环境要求
-- Python 3.8+
-- Windows / Linux / macOS（开发主要在 Windows 测试）
+1. **启动程序**：运行 `python main.py`，主界面会在中央显示 TradingView 图表。
+2. **绑定数据库**：在菜单 `数据 > 选择数据库文件...` 指定或创建 SQLite，工具栏会实时展示当前路径。
+3. **准备导入目录**：点击工具栏“选择数据目录”，再通过“导入”下拉按钮选择“追加”或“重建”模式。
+4. **刷新标的并筛选**：股票下拉框支持后台刷新与关键字搜索，便于在大盘子里快速定位。
+5. **查看策略结果**：工具栏 `策略选股` 按钮会打开右侧策略工作台，可配置最小反转幅度、触发即时预览或批量扫描，扫描结果双击即可将标的带回主图。
+6. **监控日志**：数据导入和策略执行均会写入独立日志对话框，同时在状态栏显示进度条。
 
-### 安装步骤
-1. **克隆项目**
-	```bash
-	git clone <repository-url>
-	cd pyqt-stock-analysis
-	```
-2. **创建虚拟环境（推荐）**
-	```bash
-	python -m venv venv
-	venv\Scripts\activate  # Windows
-	# 或
-	source venv/bin/activate  # Linux/macOS
-	```
-3. **安装依赖**
-	```bash
-	pip install -r requirements.txt  # 如未提供可按“核心依赖”手动安装
-	```
-4. **运行应用**
-	```bash
-	python main.py
-	```
-
-## 📖 使用指南
-
-### 基本操作
-1. **启动程序**：运行 `python main.py`
-2. **选择数据库**：`数据 > 选择数据库文件` 绑定目标 SQLite
-3. **导入数据**：`数据 > 导入` 选择 Excel/CSV，支持追加或重建
-4. **选择标的**：在主界面股票下拉框中选择股票代码
-5. **运行策略**：`选股 > ZigZag波峰波谷` 触发一次性检测
-6. **策略研究**：`视图 > 显示策略工作台` 打开右侧面板，使用即时预览/批量扫描/历史回测进一步分析
-
-### 策略研究工作台
-- **打开方式**：通过菜单或快捷按钮显示/隐藏 Dock
-- **即时预览**：调整 ZigZag 参数后点击预览，结果直接绘制在主图
-- **批量扫描**：指定股票池与参数，输出评分/备注列表，可双击定位
-- **历史回测**：使用轻量回测引擎计算收益、回撤与胜率，辅助筛选
-
-## 📁 项目架构
+## 目录结构（节选）
 
 ```
-pyqt/
-├── main.py                    # 应用入口
-├── src/
-│   ├── data/                  # 数据导入、加载与后台任务
-│   ├── displays/              # 图表显示接口与实现
-│   ├── rendering/             # TradingView 模板渲染工具
-│   ├── research/              # 策略注册、扫描、回测与API模型
-│   ├── strategies/            # ZigZag 策略实现（当前聚焦 zigzag_wave_peaks_valleys.py）
-│   ├── ui/                    # 工作台等共享 UI 组件（`panels.py`）
-│   └── main_ui.py             # 主窗口，负责菜单、Dock、策略注册
+makemoney/
+├── main.py                # 程序入口，负责 QApplication 启动
 ├── README.md
-└── ...
+└── src/
+    ├── main_ui.py         # 主窗口与工具栏、Dock 组织
+    ├── data/              # 数据导入、加载与后台 worker
+    ├── displays/          # 图表显示适配器，当前注册 TradingView ChartDisplay
+    ├── rendering/         # TradingView HTML 模板与渲染工具
+    ├── research/          # 策略注册中心、批量扫描与回测模型
+    ├── strategies/        # `zigzag_wave_peaks_valleys.py` 保留的唯一策略实现
+    └── ui/                # K 线控制器与策略工作台控制器
 ```
 
-## 🏗️ 架构设计
-- **分层职责**：数据层（`data/`）、业务策略层（`strategies/`）、研究引擎（`research/`）、展示层（`displays/` + `rendering/`）
-- **事件驱动**：后台线程通过信号/槽回传进度、状态与结果
-- **策略注册中心**：`research.global_strategy_registry()` 统一暴露给菜单与工作台共享
-- **可停靠 UI**：策略工作台作为 DockWidget，可随时隐藏或分离至独立窗口
+## 开发说明
 
-## 🔬 策略分析
+- **控制器解耦**：`KLineController` 负责数据与图表联动；`StrategyWorkbenchController` 控制 Dock 面板、信号与回测流程；主窗口仅处理装配。
+- **策略唯一来源**：历史的 `advanced_*/double_bottom/pattern_scanner` 已清理，`strategies/__init__.py` 现在只导出 `ZigZagWavePeaksValleysStrategy`。
+- **扩展策略**：若需加入新策略，请在 `strategies/` 中实现，并在工作台控制器中注册对应的预览/扫描/回测入口。
+- **模板自定义**：修改 `src/rendering/templates/tradingview_template.html` 即可调整图形主题、指标或交互事件。
 
-### ZigZag 波峰波谷
-- **算法**：自定义反转百分比的 ZigZag 识别器
-- **视觉呈现**：红色箭头（波峰）、绿色箭头（波谷），附加状态文本
-- **工作台能力**：
-  - *即时预览*：参数热更新，结果回写至主图
-  - *批量扫描*：遍历股票池输出信号打分，支持备注与导出
-  - *历史回测*：轻量级模拟，快速评估收益/回撤/胜率
+## 数据导入要点
 
-## 🔧 开发指南
+- 支持 `.xls/.xlsx/.xlsm/.xlsb/.csv`，可根据数据量选择“追加”或“重建”模式。
+- 导入任务在后台线程执行，并通过日志窗口输出进度；状态栏的进度条可以判断任务是否仍在运行。
+- 若数据库很大，建议先刷新标的列表（工具栏按钮）再开始策略分析，避免旧缓存影响结果。
 
-### 添加/扩展策略
-1. 在 `src/strategies/` 中实现策略逻辑（可参考 `zigzag_wave_peaks_valleys.py`）
-2. 在 `main_ui.py` 的 `_initialize_strategies` 中将策略接入主菜单或按钮
-3. 调用 `research.global_strategy_registry().register(...)` 注册 `StrategyDefinition`
-4. 若需让工作台识别策略，可在 `_register_workbench_strategies` 中添加定义，包括参数 schema、预览/扫描/回测入口
+## 贡献与许可
 
-### 添加新显示方式
-1. 在 `src/displays/` 中实现新的显示器，继承 `DisplayInterface`
-2. 在主界面中注册该显示器并与渲染层打通
-
-### 自定义模板
-- 修改 `src/rendering/templates/tradingview_template.html` 可调整图表主题、指标、布局
-
-## 📦 数据导入参考
-- 支持 Excel (`.xls/.xlsx/.xlsm/.xlsb`) 与 CSV (`.csv`)
-- **追加模式**：保留历史数据并新增
-- **重建模式**：清空后重新导入，适合结构变化或全量更新
-
-## 🤝 贡献指南
-1. Fork 仓库
-2. 创建分支 `git checkout -b feature/<name>`
-3. 提交更改 `git commit -m "feat: <description>"`
-4. 推送并发起 Pull Request
-
-## 📄 许可证
-项目遵循 MIT License，详见 `LICENSE`。
-
-## 🙏 致谢
-- TradingView 团队提供的优秀前端交互体验启发
-- PyQt 社区贡献的高质量组件与教程
-
-- [PyQt5](https://pypi.org/project/PyQt5/) - 优秀的GUI框架
-- [TradingView](https://www.tradingview.com/) - 图表库灵感来源
-- [akshare](https://github.com/akfamily/akshare) - 金融数据接口
+- 欢迎通过 Issue/Pull Request 报告问题或贡献新特性。
+- 开发建议：为每个功能创建独立分支，提交信息使用 `feat/fix/chore` 前缀描述变更。
+- 项目采用 MIT License，详细条款见 `LICENSE`。
