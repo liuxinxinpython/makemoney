@@ -19,8 +19,34 @@ try:
 except ImportError:
     HAS_AKSHARE = False
 
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
 TEMPLATE_FILENAME = "tradingview_template.html"
 TEMPLATE_PATH = Path(__file__).parent / "templates" / TEMPLATE_FILENAME
+
+
+class SafeJSONEncoder(json.JSONEncoder):
+    """
+    JSON Encoder that handles:
+    1. Numpy types (int, float, array) - Compatible with NumPy 1.x and 2.x
+    2. NaN/Inf values (converts to None)
+    """
+    def default(self, obj):
+        if HAS_NUMPY:
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                if np.isnan(obj) or np.isinf(obj):
+                    return None
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+        
+        return super().default(obj)
 
 
 def render_html(
@@ -56,12 +82,13 @@ def render_html(
     else:
         instrument_payload["display"] = "未选择股票"
 
+    # Use SafeJSONEncoder to handle potential numpy types and NaNs
     return (
-        template.replace("__CANDLES__", json.dumps(candles))
-        .replace("__VOLUMES__", json.dumps(volumes))
+        template.replace("__CANDLES__", json.dumps(candles, cls=SafeJSONEncoder))
+        .replace("__VOLUMES__", json.dumps(volumes, cls=SafeJSONEncoder))
         .replace("__INSTRUMENT__", json.dumps(instrument_payload, ensure_ascii=False))
-        .replace("__SIGNALS__", json.dumps(markers or []))
-        .replace("__OVERLAYS__", json.dumps(overlays or []))
+        .replace("__SIGNALS__", json.dumps(markers or [], cls=SafeJSONEncoder))
+        .replace("__OVERLAYS__", json.dumps(overlays or [], cls=SafeJSONEncoder))
     )
 
 

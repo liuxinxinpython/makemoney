@@ -58,14 +58,31 @@ except Exception:
     DisplayResult = None
 
 try:
-    from .strategies.wave_peaks_valleys import WavePeaksValleysStrategy
+    from .strategies.zigzag_wave_peaks_valleys import ZigZagWavePeaksValleysStrategy
 except Exception:
-    WavePeaksValleysStrategy = None
+    ZigZagWavePeaksValleysStrategy = None
 
 try:
-    from .strategies.advanced_wave_peaks_valleys import AdvancedWavePeaksValleysStrategy
+    from .ui import StrategyWorkbenchPanel
 except Exception:
-    AdvancedWavePeaksValleysStrategy = None
+    StrategyWorkbenchPanel = None
+
+try:
+    from .research import (
+        StrategyContext,
+        StrategyDefinition,
+        StrategyParameter,
+        StrategyRegistry,
+        StrategyRunResult,
+        global_strategy_registry,
+    )
+except Exception:
+    StrategyContext = None
+    StrategyDefinition = None
+    StrategyParameter = None
+    StrategyRegistry = None
+    StrategyRunResult = None
+    global_strategy_registry = None
 
 
 class DebuggableWebEnginePage(QWebEnginePage):
@@ -86,7 +103,7 @@ class DebuggableWebEnginePage(QWebEnginePage):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, db_path: Optional[Path] = None) -> None:
         super().__init__()
-        self.setWindowTitle("A 股 K 线与导入工具")
+        self.setWindowTitle("A股K线与导入工具")
         self.resize(1200, 720)
 
         from .rendering import render_html as _; _
@@ -157,9 +174,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.log_history: List[str] = []
         self.strategy_definitions: List[Dict[str, Any]] = []
         self.menu_strategy: Optional[QtWidgets.QMenu] = None
-        self.wave_peaks_valleys_scan_dialog: Optional[QtWidgets.QDialog] = None
-        self.wave_peaks_valleys_scan_table: Optional[QtWidgets.QTableWidget] = None
-        self.wave_peaks_valleys_scan_matches: List[Any] = []
+        self.menu_view: Optional[QtWidgets.QMenu] = None
+        self.strategy_registry: Optional[StrategyRegistry] = None
+        self.workbench_panel: Optional[StrategyWorkbenchPanel] = None
+        self.workbench_dock: Optional[QtWidgets.QDockWidget] = None
+        self.action_toggle_workbench: Optional[QtWidgets.QAction] = None
 
         # Initialize display manager
         self.display_manager = DisplayManager() if DisplayManager else None
@@ -177,9 +196,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._create_menus()
         self._create_toolbar()
         self._initialize_strategies()
+        self._setup_strategy_workbench()
 
         self.statusBar().showMessage("就绪")
-        # 导入进度条（用于导入过程的可视反馈）
+        # 导入进度条(用于导入过程的可视反馈)
         self.import_progress = QtWidgets.QProgressBar(self)
         self.import_progress.setVisible(False)
         self.import_progress.setFixedWidth(150)
@@ -194,15 +214,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.action_choose_db = QtWidgets.QAction("选择数据库文件...", self)
         self.action_choose_db.triggered.connect(self.choose_database_file)
 
-        # 原先的单一导入操作保留为通用入口（追加或重建由参数决定）
+        # 保留原有的单次导入操作作为通用入口(由参数决定追加或重建)
         self.action_import = QtWidgets.QAction("导入到 SQLite", self)
         self.action_import.triggered.connect(self.start_import)
         self.action_import.setEnabled(False)
 
-        self.action_refresh_symbols = QtWidgets.QAction("刷新股票列表", self)
+        self.action_refresh_symbols = QtWidgets.QAction("刷新标的列表", self)
         self.action_refresh_symbols.triggered.connect(self.refresh_symbols)
 
-        # 设置图标和工具提示，改善可用性
+        # 设置图标和工具提示,提升可用性
         style = QtWidgets.QApplication.style()
         try:
             self.action_choose_dir.setIcon(style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
@@ -211,9 +231,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.action_refresh_symbols.setIcon(style.standardIcon(QtWidgets.QStyle.SP_BrowserReload))
         except Exception:
             pass
-        self.action_choose_dir.setToolTip("选择本地数据目录（Excel/CSV）以导入到数据库")
-        self.action_choose_db.setToolTip("选择或创建 SQLite 数据库文件用于保存历史日线")
-        self.action_import.setToolTip("导入本地数据到 SQLite（默认追加），使用导入菜单可选择重建导入")
+        self.action_choose_dir.setToolTip("选择本地数据目录(Excel/CSV)并导入至数据库")
+        self.action_choose_db.setToolTip("选择或创建 SQLite 数据库文件用于保存行情 K 线")
+        self.action_import.setToolTip("导入本地数据到 SQLite(默认追加,可在导入菜单中选择重建)")
         self.action_refresh_symbols.setToolTip("刷新数据库中的标的列表")
 
     def _create_menus(self) -> None:
@@ -221,14 +241,14 @@ class MainWindow(QtWidgets.QMainWindow):
         menu_data.addAction(self.action_choose_dir)
         menu_data.addAction(self.action_choose_db)
         menu_data.addSeparator()
-        # 导入子菜单，提供“追加导入 / 重建导入”选项
+        # 导入子菜单,提供"追加导入 / 重建导入"选项
         self.import_menu = QtWidgets.QMenu("导入", self)
-        self.action_import_append = QtWidgets.QAction("导入（追加）", self)
+        self.action_import_append = QtWidgets.QAction("导入(追加)", self)
         self.action_import_append.triggered.connect(lambda: self.start_import(False))
-        self.action_import_replace = QtWidgets.QAction("导入（重建）", self)
+        self.action_import_replace = QtWidgets.QAction("导入(重建)", self)
         self.action_import_replace.triggered.connect(lambda: self.start_import(True))
-        self.action_import_append.setToolTip("将新数据追加到现有数据库表中（非破坏性）")
-        self.action_import_replace.setToolTip("删除并重建表格，以新数据覆盖原有数据（会破坏已存在数据）")
+        self.action_import_append.setToolTip("将新数据追加到现有数据表中(非破坏性)")
+        self.action_import_replace.setToolTip("删除并重建目标数据表,以新数据覆盖现有记录")
         try:
             style2 = QtWidgets.QApplication.style()
             self.action_import_append.setIcon(style2.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
@@ -241,18 +261,26 @@ class MainWindow(QtWidgets.QMainWindow):
         menu_data.addAction(self.action_refresh_symbols)
 
         self.menu_strategy = self.menuBar().addMenu("选股")
+        self.menu_view = self.menuBar().addMenu("视图")
+        self.action_toggle_workbench = QtWidgets.QAction("显示策略工作台", self)
+        self.action_toggle_workbench.setCheckable(True)
+        self.action_toggle_workbench.setChecked(True)
+        self.action_toggle_workbench.triggered.connect(self._toggle_workbench_visibility)
+        if StrategyWorkbenchPanel is None or global_strategy_registry is None:
+            self.action_toggle_workbench.setEnabled(False)
+        self.menu_view.addAction(self.action_toggle_workbench)
 
     def _create_toolbar(self) -> None:
         toolbar = self.addToolBar("导入")
         toolbar.setMovable(False)
-        # 左侧：数据操作
+        # 左侧:数据操作
         toolbar.addAction(self.action_choose_dir)
         # 使用一个工具按钮承载导入子菜单
         import_toolbtn = QtWidgets.QToolButton(self)
         import_toolbtn.setText("导入")
         import_toolbtn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         import_toolbtn.setMenu(self.import_menu)
-        import_toolbtn.setToolTip("导入本地数据到数据库（点击可选择追加或重建导入）")
+        import_toolbtn.setToolTip("将本地数据导入数据库(可选择追加或重建)")
         try:
             import_toolbtn.setIcon(QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload))
         except Exception:
@@ -265,33 +293,213 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addWidget(self.db_path_label)
         toolbar.addSeparator()
 
-        toolbar.addWidget(QtWidgets.QLabel("股票: ", self))
+        toolbar.addWidget(QtWidgets.QLabel("标的:", self))
         toolbar.addWidget(self.symbol_combo)
         toolbar.addSeparator()
-        # 移除工具栏上的重建导入复选框（由导入菜单控制）
+        # 移除工具栏上的重建导入复选框,改由导入菜单控制
         toolbar.addWidget(QtWidgets.QLabel("搜索:", self))
         self.symbol_search.setMaximumWidth(220)
         toolbar.addWidget(self.symbol_search)
         toolbar.addSeparator()
-        # 移除 toolbar 的 '选股' 下拉菜单（保留 menu_bar 的 '选股' 菜单）
+        # 移除工具栏中的"选股"下拉,仅保留菜单栏版本
 
     def _initialize_strategies(self) -> None:
         self.strategy_definitions = []
         self._register_strategy(
-            key="wave_peaks_valleys",
-            title="波峰波谷检测",
-            handler=self.scan_wave_peaks_valleys,
-            requires_selector=False,  # 不依赖volume_price_selector
-            description="检测当前选中股票的波峰和波谷位置，并在图上标记。",
-        )
-        self._register_strategy(
-            key="advanced_wave_peaks_valleys",
-            title="高级波峰波谷检测",
-            handler=self.scan_advanced_wave_peaks_valleys,
-            requires_selector=False,  # 不依赖volume_price_selector
-            description="使用Savitzky-Golay滤波器和形态学操作进行更准确的波峰波谷检测。",
+            key="zigzag_wave_peaks_valleys",
+            title="ZigZag波峰波谷",
+            handler=self.scan_zigzag_wave_peaks_valleys,
+            requires_selector=False,
+            description="使用 ZigZag 算法在图表中识别价格数据的波峰与波谷形态",
         )
         self._rebuild_strategy_menus()
+
+    def _setup_strategy_workbench(self) -> None:
+        if self.workbench_dock is not None:
+            return
+        if StrategyWorkbenchPanel is None or global_strategy_registry is None:
+            return
+        try:
+            self.strategy_registry = global_strategy_registry()
+        except Exception:
+            self.strategy_registry = None
+            return
+
+        self._register_workbench_strategies()
+
+        if not self.strategy_registry:
+            return
+
+        panel = StrategyWorkbenchPanel(
+            registry=self.strategy_registry,
+            universe_provider=self._workbench_universe,
+            db_path_provider=lambda: self.db_path,
+            preview_handler=self._run_workbench_preview,
+            chart_focus_handler=self._focus_chart_view,
+            load_symbol_handler=self._load_symbol_from_workbench,
+            parent=self,
+        )
+        dock = QtWidgets.QDockWidget("策略工作台", self)
+        dock.setObjectName("strategy_workbench_dock")
+        dock.setWidget(panel)
+        dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+        dock.visibilityChanged.connect(self._on_workbench_visibility_changed)
+
+        self.workbench_panel = panel
+        self.workbench_dock = dock
+
+        if self.action_toggle_workbench:
+            self.action_toggle_workbench.setEnabled(True)
+            self.action_toggle_workbench.blockSignals(True)
+            self.action_toggle_workbench.setChecked(True)
+            self.action_toggle_workbench.blockSignals(False)
+
+    def _register_workbench_strategies(self) -> None:
+        if not (self.strategy_registry and StrategyDefinition and StrategyParameter):
+            return
+        if self.strategy_registry.get("zigzag_wave_peaks_valleys"):
+            return
+
+        definition = StrategyDefinition(
+            key="zigzag_wave_peaks_valleys",
+            title="ZigZag波峰波谷",
+            description="识别 ZigZag 波动形态, 输出波峰/波谷标记与状态信息",
+            handler=self._zigzag_strategy_handler,
+            category="形态识别",
+            parameters=[
+                StrategyParameter(
+                    key="min_reversal",
+                    label="最小反转(%)",
+                    type="number",
+                    default=5.0,
+                    description="忽略幅度低于该百分比的价格波动",
+                )
+            ],
+            tags=["形态识别", "波动策略"],
+        )
+        self.strategy_registry.register(definition)
+
+    def _zigzag_strategy_handler(self, context: "StrategyContext") -> "StrategyRunResult":
+        if ZigZagWavePeaksValleysStrategy is None or StrategyRunResult is None:
+            raise RuntimeError("ZigZag 策略不可用")
+
+        try:
+            min_pct = float(context.params.get("min_reversal", 5.0))
+        except (TypeError, ValueError):
+            min_pct = 5.0
+        min_reversal = max(0.0005, min_pct / 100.0)
+
+        strategy = ZigZagWavePeaksValleysStrategy(min_reversal=min_reversal)
+        raw_result = strategy.scan_current_symbol(context.db_path, context.table_name)
+
+        markers: List[Dict[str, Any]] = []
+        overlays: List[Dict[str, Any]] = []
+        status_message: Optional[str] = None
+
+        if raw_result is None:
+            pass
+        elif DisplayResult is not None and isinstance(raw_result, DisplayResult):
+            markers = list(getattr(raw_result, "markers", []) or [])
+            overlays = list(getattr(raw_result, "overlays", []) or [])
+            status_message = getattr(raw_result, "status_message", None)
+        else:
+            markers = list(raw_result.get("markers", []) or [])  # type: ignore[union-attr]
+            overlays = list(raw_result.get("overlays", []) or [])  # type: ignore[union-attr]
+            status_message = raw_result.get("status_message")  # type: ignore[union-attr]
+
+        return StrategyRunResult(
+            strategy_name="zigzag_wave_peaks_valleys",
+            markers=markers,
+            overlays=overlays,
+            status_message=status_message,
+        )
+
+    def _run_workbench_preview(self, strategy_key: str, params: Dict[str, object]) -> Optional["StrategyRunResult"]:
+        if not self.strategy_registry or StrategyContext is None:
+            raise RuntimeError("策略工作台不可用")
+        if not self.current_table:
+            raise RuntimeError("请先选择标的")
+        if not self.db_path.exists():
+            raise RuntimeError("数据库文件不存在")
+
+        context = StrategyContext(
+            db_path=self.db_path,
+            table_name=self.current_table,
+            symbol=self.current_symbol or self.current_table,
+            params=params,
+            current_only=True,
+        )
+        result = self.strategy_registry.run_strategy(strategy_key, context)
+
+        if result and load_candles_from_sqlite:
+            data = load_candles_from_sqlite(self.db_path, self.current_table)
+            if data:
+                candles, volumes, instrument = data
+                self.current_markers = list(result.markers)
+                self.current_overlays = list(result.overlays)
+                self._render_chart(candles, volumes, instrument, self.current_markers, self.current_overlays)
+                if result.status_message:
+                    self.statusBar().showMessage(result.status_message)
+
+        return result
+
+    def _workbench_universe(self) -> List[str]:
+        universe: List[str] = []
+        for entry in self.symbol_entries:
+            table = entry.get("table")
+            if table:
+                universe.append(table)
+        return universe
+
+    def _focus_chart_view(self) -> None:
+        if hasattr(self, "web_view"):
+            try:
+                self.web_view.setFocus()
+            except Exception:
+                pass
+
+    def _load_symbol_from_workbench(self, table_name: str) -> None:
+        if not table_name:
+            return
+
+        def _select_from(entries: List[Dict[str, str]]) -> bool:
+            for idx, entry in enumerate(entries):
+                target_table = entry.get("table")
+                target_symbol = entry.get("symbol")
+                if target_table == table_name or target_symbol == table_name:
+                    self.symbol_combo.setCurrentIndex(idx)
+                    return True
+            return False
+
+        if self.filtered_symbol_entries and _select_from(self.filtered_symbol_entries):
+            return
+
+        if self.symbol_search.text():
+            self.symbol_search.blockSignals(True)
+            self.symbol_search.clear()
+            self.symbol_search.blockSignals(False)
+
+        self._apply_symbol_filter(select=table_name, maintain_selection=False)
+
+    def _toggle_workbench_visibility(self, checked: bool) -> None:
+        if checked and self.workbench_dock is None:
+            self._setup_strategy_workbench()
+
+        if self.workbench_dock:
+            self.workbench_dock.setVisible(checked)
+            if checked:
+                self.workbench_dock.raise_()
+        elif self.action_toggle_workbench:
+            self.action_toggle_workbench.blockSignals(True)
+            self.action_toggle_workbench.setChecked(False)
+            self.action_toggle_workbench.blockSignals(False)
+
+    def _on_workbench_visibility_changed(self, visible: bool) -> None:
+        if self.action_toggle_workbench:
+            self.action_toggle_workbench.blockSignals(True)
+            self.action_toggle_workbench.setChecked(visible)
+            self.action_toggle_workbench.blockSignals(False)
 
     def _register_strategy(
         self,
@@ -313,7 +521,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _strategy_enabled(self, definition: Dict[str, Any]) -> bool:
         if definition.get("requires_selector"):
-            # 检查是否有volume_price_selector模块（用于VolumePriceStrategy）
+            # 检查 volume_price_selector 模块是否可用（VolumePriceStrategy 依赖）
             try:
                 from .data.volume_price_selector import ScanConfig
                 return True
@@ -401,131 +609,49 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_js_console_message(self, message: str) -> None:
         self.append_log(f"[JS] {message}")
 
-    def scan_wave_peaks_valleys(self) -> None:
-        """检测当前选中股票的波峰和波谷位置，并在图上标记"""
-        # 检查前提条件
+    def scan_zigzag_wave_peaks_valleys(self) -> None:
+        """使用 ZigZag 算法检测当前标的的波峰与波谷"""
         if not self.current_table:
-            QtWidgets.QMessageBox.warning(self, "未选择股票", "请先选择一个股票再执行波峰波谷检测。")
+            QtWidgets.QMessageBox.warning(self, "未选择标的", "请先选择一个标的再执行 ZigZag 检测。")
             return
 
         if not self.db_path.exists():
-            QtWidgets.QMessageBox.warning(self, "缺少数据库", "请先选择有效的 SQLite 数据库。")
+            QtWidgets.QMessageBox.warning(self, "缺少数据库", "请先选择有效的 SQLite 数据库文件。")
             return
 
-        if WavePeaksValleysStrategy is None:
-            QtWidgets.QMessageBox.critical(self, "缺少模块", "波峰波谷检测策略模块未找到。")
+        if ZigZagWavePeaksValleysStrategy is None:
+            QtWidgets.QMessageBox.critical(self, "缺少模块", "ZigZag 策略模块未正确安装。")
             return
 
-        # 创建策略实例并执行检测
         try:
-            strategy = WavePeaksValleysStrategy()
+            strategy = ZigZagWavePeaksValleysStrategy()
             result = strategy.scan_current_symbol(self.db_path, self.current_table)
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "检测失败", str(exc))
+            QtWidgets.QMessageBox.critical(self, "ZigZag 检测失败", str(exc))
             return
 
-        # 处理检测结果
         if result is None:
-            QtWidgets.QMessageBox.information(self, "未检测到波峰波谷", "当前股票未检测到显著的波峰波谷。")
-            # 清除标记并重新渲染
+            QtWidgets.QMessageBox.information(self, "未检出波峰波谷", "当前标的未检测到明显的 ZigZag 波峰波谷。")
             self.current_markers = []
             self.current_overlays = []
-            # 重新加载当前股票数据进行渲染
-            if self.current_table:
-                data = load_candles_from_sqlite(self.db_path, self.current_table)
-                if data:
-                    candles, volumes, instrument = data
-                    self._render_chart(candles, volumes, instrument, [], [])
+            data = load_candles_from_sqlite(self.db_path, self.current_table) if self.current_table else None
+            if data:
+                candles, volumes, instrument = data
+                self._render_chart(candles, volumes, instrument, [], [])
             return
 
-        # 显示检测结果
         markers = result.get("markers", []) if isinstance(result, dict) else result.markers
         status_message = result.get("status_message", "") if isinstance(result, dict) else result.status_message
 
-        # 调试输出
-        print(f"DEBUG: Generated {len(markers)} markers")
-        print(f"DEBUG: markers type: {type(markers)}")
-        print(f"DEBUG: markers is not None: {markers is not None}")
-        if markers:
-            print(f"DEBUG: First marker: {markers[0]}")
-        else:
-            print("DEBUG: markers is empty!")
-
         self.current_markers = markers
         self.current_overlays = []
-        # 重新加载当前股票数据进行渲染
-        if self.current_table:
-            data = load_candles_from_sqlite(self.db_path, self.current_table)
-            if data:
-                candles, volumes, instrument = data
-                print(f"DEBUG: About to call _render_chart with {len(markers)} markers")
-                self._render_chart(candles, volumes, instrument, markers, [])
+        data = load_candles_from_sqlite(self.db_path, self.current_table) if self.current_table else None
+        if data:
+            candles, volumes, instrument = data
+            self._render_chart(candles, volumes, instrument, markers, [])
 
-        # 更新状态栏
-        self.statusBar().showMessage(status_message)
+        self.statusBar().showMessage(status_message or "ZigZag 检测完成")
 
-    def scan_advanced_wave_peaks_valleys(self) -> None:
-        """使用高级算法检测当前选中股票的波峰和波谷位置，并在图上标记"""
-        # 检查前提条件
-        if not self.current_table:
-            QtWidgets.QMessageBox.warning(self, "未选择股票", "请先选择一个股票再执行高级波峰波谷检测。")
-            return
-
-        if not self.db_path.exists():
-            QtWidgets.QMessageBox.warning(self, "缺少数据库", "请先选择有效的 SQLite 数据库。")
-            return
-
-        if AdvancedWavePeaksValleysStrategy is None:
-            QtWidgets.QMessageBox.critical(self, "缺少模块", "高级波峰波谷检测策略模块未找到。")
-            return
-
-        # 创建高级策略实例并执行检测
-        try:
-            strategy = AdvancedWavePeaksValleysStrategy()
-            result = strategy.scan_current_symbol(self.db_path, self.current_table)
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "高级检测失败", str(exc))
-            return
-
-        # 处理检测结果
-        if result is None:
-            QtWidgets.QMessageBox.information(self, "未检测到波峰波谷", "当前股票未检测到显著的波峰波谷。")
-            # 清除标记并重新渲染
-            self.current_markers = []
-            self.current_overlays = []
-            # 重新加载当前股票数据进行渲染
-            if self.current_table:
-                data = load_candles_from_sqlite(self.db_path, self.current_table)
-                if data:
-                    candles, volumes, instrument = data
-                    self._render_chart(candles, volumes, instrument, [], [])
-            return
-
-        # 显示检测结果
-        markers = result.get("markers", []) if isinstance(result, dict) else result.markers
-        status_message = result.get("status_message", "") if isinstance(result, dict) else result.status_message
-
-        # 调试输出
-        print(f"DEBUG: Advanced algorithm generated {len(markers)} markers")
-        print(f"DEBUG: markers type: {type(markers)}")
-        print(f"DEBUG: markers is not None: {markers is not None}")
-        if markers:
-            print(f"DEBUG: First advanced marker: {markers[0]}")
-        else:
-            print("DEBUG: advanced markers is empty!")
-
-        self.current_markers = markers
-        self.current_overlays = []
-        # 重新加载当前股票数据进行渲染
-        if self.current_table:
-            data = load_candles_from_sqlite(self.db_path, self.current_table)
-            if data:
-                candles, volumes, instrument = data
-                print(f"DEBUG: About to call _render_chart with {len(markers)} advanced markers")
-                self._render_chart(candles, volumes, instrument, markers, [])
-
-        # 更新状态栏
-        self.statusBar().showMessage(status_message)
 
     def choose_data_directory(self) -> None:
         directory = QtWidgets.QFileDialog.getExistingDirectory(self, "选择包含 Excel/CSV 的目录")
@@ -553,7 +679,7 @@ class MainWindow(QtWidgets.QMainWindow):
         display_path = str(self.db_path.resolve())
         self.db_path_label.setText(display_path)
         self.db_path_label.setToolTip(display_path)
-        self.append_log(f"数据库路径设置为: {self.db_path}")
+        self.append_log(f"数据库路径已更新为: {self.db_path}")
         # Refresh symbols asynchronously to avoid blocking UI when DB is large.
         self.refresh_symbols_async()
 
@@ -563,7 +689,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         if self.import_thread is not None:
-            QtWidgets.QMessageBox.information(self, "导入运行中", "导入任务正在执行，请稍候。")
+            QtWidgets.QMessageBox.information(self, "导入进行中", "导入任务正在执行，请稍候。")
             return
 
         self.log_history.clear()
@@ -576,12 +702,12 @@ class MainWindow(QtWidgets.QMainWindow):
             confirm = QtWidgets.QMessageBox.question(
                 self,
                 "确认重建导入",
-                "重建导入将覆盖目标数据库中的对应表并删掉现有数据。是否继续？",
+                "重建导入会清空数据库中的目标表并用新数据覆盖，是否继续？",
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                 QtWidgets.QMessageBox.No,
             )
             if confirm != QtWidgets.QMessageBox.Yes:
-                self.append_log("用户取消重建导入。")
+                self.append_log("用户取消了重建导入。")
                 return
         self.append_log("准备导入数据...", force_show=True)
         self.append_log(f"导入模式: {'重建' if replace_mode else '追加'}")
@@ -602,9 +728,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.action_import_append.setEnabled(False)
         self.action_import_replace.setEnabled(False)
         self.action_choose_dir.setEnabled(False)
-        self.statusBar().showMessage("导入进行中...")
+        self.statusBar().showMessage("正在导入...")
 
-        # 显示进度条（不确定模式，直到收到完成）
+        # 显示进度条（不确定模式，直到完成）
         self.import_progress.setVisible(True)
         self.import_progress.setRange(0, 0)
         self.import_thread.start()
@@ -694,17 +820,17 @@ class MainWindow(QtWidgets.QMainWindow):
                             elif meta_name is not None:
                                 entry["name"] = str(meta_name).strip()
                     except Exception as exc:  # pragma: no cover - runtime feedback
-                        self.append_log(f"读取 {table} 名称失败: {exc}")
+                        self.append_log(f"璇诲彇 {table} 鍚嶇О澶辫触: {exc}")
 
                     entry["display"] = (
-                        f"{entry['symbol']} · {entry['name']}"
+                        f"{entry['symbol']} 路 {entry['name']}"
                         if entry["name"]
                         else entry["symbol"]
                     )
                     self.symbol_entries.append(entry)
                     symbol_names.append(entry["symbol"]) if entry["symbol"] else None
         except Exception as exc:  # pragma: no cover - runtime failure feedback
-            self.append_log(f"加载股票列表失败: {exc}")
+            self.append_log(f"加载标的列表失败: {exc}")
 
         if not self.symbol_entries:
             self.symbol_combo.blockSignals(True)
@@ -721,9 +847,9 @@ class MainWindow(QtWidgets.QMainWindow):
         return symbol_names
 
     def refresh_symbols_async(self, select: Optional[str] = None) -> None:
-        # 显示加载进度条
+        # 显示加载进度
         self.loading_progress.setVisible(True)
-        self.statusBar().showMessage("正在加载股票列表...")
+        self.statusBar().showMessage("正在加载标的列表...")
         
         # Async symbol refresh: use SymbolLoadWorker and update UI when finished.
         # Try to load cache to provide instant response
@@ -733,7 +859,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if cache_file.exists():
                 raw = cache_file.read_text(encoding='utf-8')
                 cached = json.loads(raw)
-                self.append_log(f"从缓存加载了 {len(cached)} 个股票条目")
+                self.append_log(f"从缓存加载了 {len(cached)} 条标的记录")
         except Exception as e:
             self.append_log(f"缓存加载失败: {e}")
             cached = None
@@ -747,20 +873,20 @@ class MainWindow(QtWidgets.QMainWindow):
             for entry in cached:
                 self.symbol_combo.addItem(entry.get('display', entry.get('symbol', '')), entry.get('table'))
             self.symbol_combo.setEnabled(True)
-            self.append_log(f"股票列表已从缓存加载，共 {len(cached)} 个股票")
+            self.append_log(f"标的列表已从缓存加载，共 {len(cached)} 条")
             # Set initial selection if specified
             if select:
                 for idx, entry in enumerate(cached):
                     if entry["table"] == select or entry["symbol"] == select:
                         self.symbol_combo.setCurrentIndex(idx)
                         break
-            # 隐藏进度条（从缓存加载）
+            # 缓存命中后立即隐藏进度
             self.loading_progress.setVisible(False)
             self.statusBar().showMessage("就绪")
         else:
             self.symbol_combo.addItem('(加载中...)', None)
             self.symbol_combo.setEnabled(False)
-            self.append_log("无缓存，开始后台加载股票列表")
+            self.append_log("没有缓存，开始后台加载标的列表")
 
         self._symbol_load_thread = QtCore.QThread(self)
         self._symbol_loader = SymbolLoadWorker(self.db_path)
@@ -773,15 +899,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._symbol_load_thread.start()
 
     def _on_symbol_load_progress(self, message: str) -> None:
-        """处理股票加载进度更新"""
+        """处理标的加载过程中的状态提示"""
         self.statusBar().showMessage(message)
 
     def _on_symbol_load_failed(self, error_message: str) -> None:
-        """处理股票加载失败"""
-        self.append_log(f"符号加载失败: {error_message}")
+        """处理标的加载失败"""
+        self.append_log(f"标的加载失败: {error_message}")
         # 隐藏进度条
         self.loading_progress.setVisible(False)
-        self.statusBar().showMessage("股票列表加载失败")
+        self.statusBar().showMessage("标的列表加载失败")
 
     def _on_symbol_load_finished(self, entries: List[Dict[str, str]], select: Optional[str]) -> None:
         # Called in the main thread via signal.
@@ -802,7 +928,7 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # 隐藏进度条
         self.loading_progress.setVisible(False)
-        self.statusBar().showMessage("股票列表加载完成")
+        self.statusBar().showMessage("标的列表加载完成")
         
         # Auto-load the default/first symbol's chart asynchronously (if any) to avoid blocking.
         chosen = None
@@ -840,7 +966,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
         if data is None:
-            self.append_log(f"未能加载 {chosen.get('symbol') or chosen.get('table')} 的历史数据。")
+            self.append_log(f"无法加载 {chosen.get('symbol') or chosen.get('table')} 的行情数据。")
             # 隐藏进度条
             self.loading_progress.setVisible(False)
             self.statusBar().showMessage("数据加载失败")
@@ -858,9 +984,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._render_chart(candles, volumes, instrument, self.current_markers, self.current_overlays)
             display = self.current_symbol_name or ''
             if display:
-                self.statusBar().showMessage(f"当前股票: {self.current_symbol} · {display}")
+                self.statusBar().showMessage(f"当前标的: {self.current_symbol} · {display}")
             else:
-                self.statusBar().showMessage(f"当前股票: {self.current_symbol}")
+                self.statusBar().showMessage(f"当前标的: {self.current_symbol}")
             
             # 隐藏进度条
             self.loading_progress.setVisible(False)
@@ -889,7 +1015,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if not query or any(query in text for text in haystacks):
                 self.filtered_symbol_entries.append(entry)
 
-        self.append_log(f"过滤结果: 查询='{query}', 原始条目={len(self.symbol_entries)}, 过滤后={len(self.filtered_symbol_entries)}")
+        self.append_log(
+            f"过滤结果: query='{query}', 原始={len(self.symbol_entries)}, 保留={len(self.filtered_symbol_entries)}"
+        )
 
         self.symbol_combo.blockSignals(True)
         self.symbol_combo.clear()
@@ -952,10 +1080,10 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-        # 显示加载进度条
+        # 显示加载进度
         self.loading_progress.setVisible(True)
-        self.append_log(f"启动后台加载 K 线数据：{entry['display']}")
-        self.statusBar().showMessage(f"加载 {entry['display']} 的 K 线数据...")
+        self.append_log(f"启动后台加载 K 线数据: {entry['display']}")
+        self.statusBar().showMessage(f"正在加载 {entry['display']} 的 K 线数据...")
         self._candle_load_thread = QtCore.QThread(self)
         self._candle_loader = CandleLoadWorker(self.db_path, table_name)
         self._candle_loader.moveToThread(self._candle_load_thread)
@@ -1003,7 +1131,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.web_view.setHtml(html, base_url)
 
     def _load_initial_chart(self) -> None:
-        # 显示加载进度条
+        # 显示加载进度
         self.loading_progress.setVisible(True)
         self.statusBar().showMessage("正在加载数据...")
         
@@ -1013,10 +1141,10 @@ class MainWindow(QtWidgets.QMainWindow):
         data = load_maotai_candles()
         if data is None:
             candles, volumes, instrument = build_mock_candles()
-            self.append_log("未能获取茅台数据，使用模拟数据")
+            self.append_log("无法获取茅台数据，改用示例数据。")
         else:
             candles, volumes, instrument = data
-            self.append_log("已加载茅台历史数据")
+            self.append_log("已加载茅台行情数据。")
 
         self.current_table = None
         self.current_symbol = instrument.get("symbol") if instrument else None

@@ -33,6 +33,7 @@ def load_candles_from_sqlite(
         return None
 
     if not db_path.exists():
+        print(f"DEBUG: db_path does not exist: {db_path.absolute()}")
         return None
 
     escaped_table = table_name.replace("\"", "\"\"")
@@ -44,10 +45,14 @@ def load_candles_from_sqlite(
     try:
         with sqlite3.connect(db_path) as conn:
             df = pd.read_sql_query(query, conn)
-    except Exception:
+    except Exception as e:
+        print(f"DEBUG: load_candles_from_sqlite failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
     if df.empty:
+        print(f"DEBUG: df is empty for table {table_name}")
         return None
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
