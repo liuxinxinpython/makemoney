@@ -5,7 +5,8 @@
 
 import sqlite3
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any
+from threading import Lock
+from typing import Dict, Optional, Tuple, List, Any, Iterable
 
 try:
     import pandas as pd  # type: ignore[import-not-found]
@@ -15,9 +16,43 @@ except ImportError:  # pragma: no cover - optional dependency
     pd = None  # type: ignore[assignment]
 
 
+_PRELOADED_CANDLES: Dict[str, Tuple[List[Dict[str, float]], List[Dict[str, float]], Dict[str, str]]] = {}
+_CACHE_LOCK = Lock()
+
+
+def _cache_key(db_path: Path, table_name: str) -> str:
+    try:
+        resolved = Path(db_path).resolve()
+    except Exception:
+        resolved = Path(db_path)
+    return f"{resolved.as_posix()}::{table_name}"
+
+
+def inject_preloaded_candles(
+    db_path: Path,
+    table_name: str,
+    payload: Tuple[List[Dict[str, float]], List[Dict[str, float]], Dict[str, str]],
+) -> None:
+    with _CACHE_LOCK:
+        _PRELOADED_CANDLES[_cache_key(db_path, table_name)] = payload
+
+
+def discard_preloaded_tables(db_path: Path, table_names: Iterable[str]) -> None:
+    with _CACHE_LOCK:
+        for table in table_names:
+            _PRELOADED_CANDLES.pop(_cache_key(db_path, table), None)
+
+
+def _consume_preloaded(db_path: Path, table_name: str):
+    with _CACHE_LOCK:
+        return _PRELOADED_CANDLES.pop(_cache_key(db_path, table_name), None)
+
+
 def load_candles_from_sqlite(
     db_path: Path,
     table_name: str,
+    *,
+    max_rows: Optional[int] = None,
 ) -> Optional[Tuple[List[Dict[str, float]], List[Dict[str, float]], Dict[str, str]]]:
     """
     从SQLite数据库加载K线数据
@@ -29,6 +64,10 @@ def load_candles_from_sqlite(
     Returns:
         (candles, volumes, instrument) 或 None
     """
+    preloaded = _consume_preloaded(db_path, table_name)
+    if preloaded is not None:
+        return preloaded
+
     if not HAS_PANDAS:
         return None
 
@@ -37,9 +76,15 @@ def load_candles_from_sqlite(
         return None
 
     escaped_table = table_name.replace("\"", "\"\"")
+    limit_clause = ""
+    order_clause = "ORDER BY date"
+    if max_rows is not None and max_rows > 0:
+        order_clause = "ORDER BY date DESC"
+        limit_clause = f" LIMIT {int(max_rows)}"
+
     query = (
         "SELECT date, open, high, low, close, volume, name, symbol FROM "
-        f'"{escaped_table}" ORDER BY date'
+        f'"{escaped_table}" {order_clause}{limit_clause}'
     )
 
     try:
@@ -57,6 +102,8 @@ def load_candles_from_sqlite(
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])
+    if max_rows is not None and max_rows > 0:
+        df = df.sort_values("date")
     if df.empty:
         return None
 

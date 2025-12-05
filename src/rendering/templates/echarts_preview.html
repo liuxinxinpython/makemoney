@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>__TITLE__</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0b1220; color: #e2e8f0; font-family: 'Segoe UI', 'Microsoft YaHei', system-ui; }
+    #chart { width: 100%; height: 100%; }
+    .header { position: absolute; top: 12px; left: 16px; z-index: 5; background: rgba(15, 23, 42, 0.7); padding: 8px 14px; border-radius: 10px; border: 1px solid rgba(148, 163, 184, 0.3); box-shadow: 0 10px 25px rgba(15, 23, 42, 0.35); }
+    .header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+    .header span { font-size: 12px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div id="chart"></div>
+  <div class="header">
+    <h1 id="title"></h1>
+    <span id="subtitle"></span>
+  </div>
+  <script>
+    const dataCandles = __CANDLES__;
+    const dataVolumes = __VOLUMES__;
+    const dataMarkers = __MARKERS__;
+    const dataOverlays = __OVERLAYS__;
+    const dataStrokes = __STROKES__;
+    const instrument = __INSTRUMENT__;
+    const titleText = instrument.display || instrument.symbol || '__TITLE__';
+    document.getElementById('title').innerText = titleText;
+    document.getElementById('subtitle').innerText = instrument.exchange ? `${instrument.exchange}` : '';
+
+    const categories = [];
+    const values = [];
+    const map = new Map();
+    const volumeMap = new Map();
+    dataCandles.forEach(item => {
+      const time = item.time;
+      categories.push(time);
+      values.push([item.open, item.close, item.low, item.high]);
+      map.set(String(time), item);
+    });
+
+    (dataVolumes || []).forEach(item => {
+      if (!item) {
+        return;
+      }
+      const key = String(item.time);
+      const value = Number(item.value ?? item.volume ?? item.amount ?? item.turnover ?? 0);
+      if (Number.isFinite(value)) {
+        volumeMap.set(key, value);
+      }
+    });
+
+    const markerPoints = (dataMarkers || []).map(marker => {
+      const candle = map.get(String(marker.time)) || {};
+      const baseline = marker.price ?? (marker.position === 'belowBar' ? candle.low : candle.high);
+      return {
+        name: marker.text || '',
+        coord: [marker.time, baseline ?? candle.close ?? 0],
+        value: marker.text || '',
+        itemStyle: { color: marker.color || '#fcd34d' },
+        symbol: marker.shape === 'arrowDown' ? 'triangle' : marker.shape === 'arrowUp' ? 'triangle' : 'circle',
+        symbolRotate: marker.shape === 'arrowDown' ? 180 : 0,
+        symbolSize: marker.size ? Math.max(10, marker.size * 6) : 14,
+        label: { color: '#0b1220', fontSize: 11, backgroundColor: '#e2e8f0', borderRadius: 4, padding: [2, 4] },
+      };
+    });
+
+    const zoneRects = (dataOverlays || []).map(range => ({
+      label: range.label || '',
+      start: range.startTime || range.start || range.from,
+      end: range.endTime || range.end || range.to,
+      top: range.top ?? range.max ?? range.upper ?? null,
+      bottom: range.bottom ?? range.min ?? range.lower ?? null,
+      color: range.color || 'rgba(255, 215, 0, 0.15)',
+      borderColor: (range.color && range.color.replace('0.15', '0.65')) || '#fcd34d',
+    }));
+
+    const strokeLines = (dataStrokes || []).map(stroke => ({
+      coords: [
+        [stroke.startTime, stroke.startPrice],
+        [stroke.endTime, stroke.endPrice],
+      ],
+      lineStyle: {
+        color: stroke.direction === 'up' ? '#34d399' : '#f87171',
+        width: 2.6,
+      },
+    }));
+
+    const chart = echarts.init(document.getElementById('chart'), null, {
+      renderer: window.devicePixelRatio > 1.4 ? 'svg' : 'canvas',
+      devicePixelRatio: Math.min(window.devicePixelRatio, 2),
+    });
+
+    const volumeSeriesData = categories.map((time, idx) => {
+      const candle = map.get(String(time)) || dataCandles[idx] || {};
+      const ref = volumeMap.has(String(time)) ? volumeMap.get(String(time)) : (candle.volume ?? candle.Volume ?? candle.vol ?? candle.amount ?? candle.turnover ?? 0);
+      const value = Number(ref) || 0;
+      const color = (candle.close ?? 0) >= (candle.open ?? 0) ? '#ea580c' : '#10b981';
+      return { value, itemStyle: { color } };
+    });
+
+    const option = {
+      animation: false,
+      backgroundColor: '#0b1220',
+      textStyle: { color: '#e2e8f0' },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross' },
+        backgroundColor: 'rgba(15,23,42,0.9)',
+      },
+      axisPointer: { link: [{ xAxisIndex: 'all' }], snap: true },
+      grid: [
+        { left: 48, right: 28, top: 40, height: '58%' },
+        { left: 48, right: 28, height: '18%', bottom: 60 },
+      ],
+      xAxis: [
+        {
+          type: 'category',
+          data: categories,
+          boundaryGap: true,
+          axisLine: { lineStyle: { color: '#475569' } },
+          axisLabel: { color: '#94a3b8' },
+          splitLine: { show: false },
+          axisPointer: { show: true },
+        },
+        {
+          type: 'category',
+          gridIndex: 1,
+          data: categories,
+          boundaryGap: true,
+          axisLine: { lineStyle: { color: '#475569' } },
+          axisLabel: { color: '#94a3b8' },
+          axisTick: { show: false },
+          splitLine: { show: false },
+        },
+      ],
+      yAxis: [
+        {
+          scale: true,
+          axisLine: { lineStyle: { color: '#475569' } },
+          splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
+          axisLabel: { color: '#cbd5f5' },
+        },
+        {
+          gridIndex: 1,
+          axisLine: { lineStyle: { color: '#475569' } },
+          splitLine: { show: false },
+          axisLabel: { color: '#94a3b8' },
+        },
+      ],
+      dataZoom: [
+        { type: 'inside', xAxisIndex: [0, 1], start: 70, end: 100 },
+        { xAxisIndex: [0, 1], start: 70, end: 100, height: 26, bottom: 18, borderColor: '#475569', textStyle: { color: '#94a3b8' } },
+      ],
+      series: [
+        {
+          name: instrument.display || 'K线',
+          type: 'candlestick',
+          data: values,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          itemStyle: {
+            color: '#ef4444',
+            color0: '#22c55e',
+            borderColor: '#ef4444',
+            borderColor0: '#22c55e',
+            borderWidth: 1.2,
+          },
+          markPoint: {
+            symbol: 'triangle',
+            symbolSize: 12,
+            symbolKeepAspect: true,
+            data: markerPoints,
+            label: { formatter: param => param.value || '', color: '#111827' },
+          },
+          z: 1,
+        },
+        {
+          name: '趋势线',
+          type: 'line',
+          data: values.map((row, idx) => [categories[idx], row[1]]),
+          smooth: true,
+          lineStyle: { color: '#64748b', width: 1, opacity: 0.35 },
+          showSymbol: false,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          z: 0,
+        },
+        {
+          name: '中枢',
+          type: 'custom',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          renderItem: (params, api) => {
+            const zone = zoneRects[params.dataIndex];
+            if (!zone || zone.top == null || zone.bottom == null) {
+              return null;
+            }
+            const start = api.coord([zone.start, zone.bottom]);
+            const end = api.coord([zone.end, zone.top]);
+            const x = Math.min(start[0], end[0]);
+            const y = Math.min(start[1], end[1]);
+            const width = Math.abs(end[0] - start[0]);
+            const height = Math.abs(end[1] - start[1]);
+            return {
+              type: 'rect',
+              shape: { x, y, width, height },
+              style: { fill: zone.color, stroke: zone.borderColor, lineWidth: 1 },
+            };
+          },
+          data: zoneRects,
+          z: 2,
+        },
+        {
+          name: '笔',
+          type: 'lines',
+          coordinateSystem: 'cartesian2d',
+          polyline: false,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: strokeLines,
+          lineStyle: { width: 3 },
+          effect: {
+            show: true,
+            trailLength: 0,
+            symbolSize: 6,
+            color: '#f8fafc',
+          },
+          z: 3,
+        },
+        {
+          name: '成交量',
+          type: 'bar',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          barWidth: '60%',
+          data: volumeSeriesData,
+          tooltip: { valueFormatter: value => `${value ?? 0}` },
+          z: 0,
+        },
+      ],
+    };
+
+    chart.setOption(option);
+    window.addEventListener('resize', () => {
+      chart.resize();
+    });
+  </script>
+</body>
+</html>

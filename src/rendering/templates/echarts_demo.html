@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>ECharts K线演示</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0f172a; font-family: 'Segoe UI', 'Microsoft YaHei', system-ui; }
+    #chart { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="chart"></div>
+  <script>
+    const rawCandles = __CANDLES__;
+    const rawMarkers = __MARKERS__;
+    const rawOverlays = __OVERLAYS__;
+
+    const categories = [];
+    const values = [];
+    const candleMap = new Map();
+
+    rawCandles.forEach(candle => {
+      const time = candle.time;
+      categories.push(time);
+      values.push([candle.open, candle.close, candle.low, candle.high]);
+      candleMap.set(String(time), candle);
+    });
+
+    const markerPoints = (rawMarkers || []).map(marker => {
+      const ref = candleMap.get(String(marker.time)) || {};
+      const price = marker.price ?? (marker.position === 'belowBar' ? (ref.low ?? ref.close) : (ref.high ?? ref.close));
+      return {
+        name: marker.text || marker.label || '',
+        coord: [marker.time, price],
+        value: marker.text || '',
+        itemStyle: { color: marker.color || '#fbc02d' },
+        symbol: marker.shape === 'arrowUp' ? 'triangle' : marker.shape === 'arrowDown' ? 'triangle' : 'circle',
+        symbolRotate: marker.shape === 'arrowDown' ? 180 : 0,
+        symbolSize: 14,
+      };
+    });
+
+    const markAreas = (rawOverlays || []).map(range => [{
+      name: range.label || range.kind || '区间',
+      itemStyle: {
+        color: range.color || 'rgba(255, 193, 7, 0.18)',
+        borderColor: '#fbc02d',
+      },
+      coord: [range.startTime || range.start || range.from, range.bottom ?? range.min ?? 'min'],
+    }, {
+      coord: [range.endTime || range.end || range.to, range.top ?? range.max ?? 'max'],
+    }]);
+
+    const option = {
+      backgroundColor: '#0f172a',
+      animation: false,
+      title: {
+        text: 'ECharts K线示例',
+        left: 16,
+        top: 10,
+        textStyle: { color: '#e2e8f0', fontSize: 18 },
+      },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross' },
+        backgroundColor: 'rgba(15,23,42,0.85)',
+      },
+      axisPointer: {
+        link: [{ xAxisIndex: 'all' }],
+      },
+      grid: { left: 50, right: 30, top: 60, bottom: 60 },
+      xAxis: {
+        type: 'category',
+        data: categories,
+        boundaryGap: true,
+        axisLine: { lineStyle: { color: '#475569' } },
+        axisLabel: { color: '#cbd5f5' },
+      },
+      yAxis: {
+        scale: true,
+        axisLine: { lineStyle: { color: '#475569' } },
+        splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
+        axisLabel: { color: '#cbd5f5' },
+      },
+      dataZoom: [
+        { type: 'inside', start: 50, end: 100 },
+        { start: 50, end: 100, height: 22, bottom: 20 },
+      ],
+      series: [
+        {
+          type: 'candlestick',
+          name: 'K线',
+          data: values,
+          itemStyle: {
+            color: '#ef4444',
+            color0: '#22c55e',
+            borderColor: '#ef4444',
+            borderColor0: '#22c55e',
+          },
+          markPoint: {
+            symbolOffset: [0, -12],
+            data: markerPoints,
+            label: {
+              formatter: params => params.value || '',
+              color: '#0f172a',
+            },
+          },
+          markArea: {
+            data: markAreas,
+            silent: true,
+          },
+        },
+      ],
+    };
+
+    const chart = echarts.init(document.getElementById('chart'));
+    chart.setOption(option);
+  </script>
+</body>
+</html>

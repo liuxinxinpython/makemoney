@@ -144,15 +144,49 @@
         close: Number(item.close),
       }));
 
-      const volumeData = (initialVolumes || []).map(item => ({
-        time: toBusinessDay(item.time),
-        value: Number(item.value),
-        color: item.color,
-      }));
-
+      const candleDataMap = new Map(candleData.map(item => [normalizeTime(item.time), item]));
       const lineData = candleData.map(item => ({ time: item.time, value: item.close }));
 
-      const candleDataMap = new Map(candleData.map(item => [normalizeTime(item.time), item]));
+      const resolveDirectionalColor = (timeValue, fallback) => {
+        const ref = candleDataMap.get(normalizeTime(timeValue));
+        if (ref) {
+          return ref.close >= ref.open ? '#f03752' : '#13b355';
+        }
+        return fallback || '#94a3b8';
+      };
+
+      let computedVolumeData = (initialVolumes || [])
+        .map(item => {
+          const time = toBusinessDay(item.time);
+          const value = Number(item.value);
+          if (!time || !Number.isFinite(value)) {
+            return null;
+          }
+          const color = item.color || resolveDirectionalColor(time);
+          return { time, value, color };
+        })
+        .filter(Boolean);
+
+      if (!computedVolumeData.length && Array.isArray(initialCandles)) {
+        computedVolumeData = initialCandles
+          .map((src, idx) => {
+            const rawValue = Number(
+              src.volume ?? src.Volume ?? src.vol ?? src.amount ?? src.turnover ?? src.value
+            );
+            if (!Number.isFinite(rawValue)) {
+              return null;
+            }
+            const linkedCandle = candleData[idx];
+            const time = linkedCandle ? linkedCandle.time : toBusinessDay(src.time);
+            const openVal = Number(src.open ?? linkedCandle?.open ?? 0);
+            const closeVal = Number(src.close ?? linkedCandle?.close ?? 0);
+            const color = closeVal >= openVal ? '#f03752' : '#13b355';
+            return { time, value: rawValue, color };
+          })
+          .filter(Boolean);
+      }
+
+      const volumeData = computedVolumeData;
       const volumeDataMap = new Map(volumeData.map(item => [normalizeTime(item.time), item.value]));
 
       const previousCloseMap = new Map();
@@ -377,6 +411,7 @@
         lastValueVisible: false,
         priceLineVisible: false,
       });
+
 
       // 创建趋势线系列 - 使用线图系列
       const trendLineSeries = mainChart.addLineSeries({

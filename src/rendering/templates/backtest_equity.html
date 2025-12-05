@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>__TITLE_TEXT__</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: 'Segoe UI', 'Microsoft YaHei', system-ui;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 12px;
+      box-sizing: border-box;
+    }
+    #stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+    }
+    .stat-card {
+      background: rgba(15, 23, 42, 0.55);
+      border: 1px solid rgba(226, 232, 240, 0.08);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .stat-label {
+      font-size: 13px;
+      color: #94a3b8;
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 600;
+      color: #f8fafc;
+      margin-top: 2px;
+    }
+    #chart {
+      flex: 1;
+      width: 100%;
+      min-height: 360px;
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.85);
+    }
+  </style>
+</head>
+<body>
+  <div id="stats"></div>
+  <div id="chart"></div>
+  <script>
+    const equityRaw = __EQUITY__;
+    const tradesRaw = __TRADES__;
+    const metrics = __METRICS__;
+    const titleText = __TITLE_JSON__;
+
+    const categories = [];
+    const equitySeries = [];
+    const drawdownSeries = [];
+    (equityRaw || []).forEach(point => {
+      const label = point.date || point.time || point.timestamp || '';
+      if (!label) return;
+      const equity = Number(point.equity || 0);
+      categories.push(label);
+      equitySeries.push([label, equity]);
+    });
+
+    function formatNumber(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return '--';
+      const num = Number(value);
+      if (Math.abs(num) >= 1e8) return (num / 1e8).toFixed(2) + '亿';
+      if (Math.abs(num) >= 1e4) return (num / 1e4).toFixed(2) + '万';
+      return num.toFixed(2);
+    }
+
+    function formatPercent(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return '--';
+      return Number(value).toFixed(2) + '%';
+    }
+
+    const statDefinitions = [
+      { key: 'final_equity', label: '期末权益', format: formatNumber },
+      { key: 'net_profit', label: '净利润', format: formatNumber },
+      { key: 'return_pct', label: '总收益率', format: formatPercent },
+      { key: 'max_drawdown', label: '最大回撤', format: formatNumber },
+      { key: 'win_rate', label: '胜率', format: v => formatPercent(Number(v || 0) * 100) },
+      { key: 'trade_count', label: '成交次数', format: v => (v ?? '--') },
+    ];
+
+    const statsContainer = document.getElementById('stats');
+    statsContainer.innerHTML = statDefinitions.map(item => {
+      const rawValue = metrics[item.key];
+      return `
+        <div class="stat-card">
+          <div class="stat-label">${item.label}</div>
+          <div class="stat-value">${item.format(rawValue)}</div>
+        </div>
+      `;
+    }).join('');
+
+    const option = {
+      backgroundColor: 'rgba(15,23,42,0.85)',
+      animation: false,
+      title: {
+        text: titleText,
+        left: 18,
+        top: 10,
+        textStyle: { color: '#f8fafc', fontSize: 18, fontWeight: 600 },
+      },
+      legend: {
+        data: ['权益', '回撤%'],
+        right: 20,
+        top: 10,
+        textStyle: { color: '#cbd5f5' },
+      },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross' },
+        backgroundColor: 'rgba(15,23,42,0.85)',
+        borderColor: '#1d4ed8',
+        formatter(params) {
+          let text = params[0] ? `${params[0].axisValue}<br/>` : '';
+          params.forEach(item => {
+            if (!item) return;
+            const unit = item.seriesName === '回撤%' ? '%' : '';
+            const value = item.data && Array.isArray(item.data) ? item.data[1] : item.data;
+            const display = unit === '%' ? (-value).toFixed(2) : Number(value).toFixed(2);
+            text += `${item.marker} ${item.seriesName}: ${display}${unit}<br/>`;
+          });
+          return text;
+        },
+      },
+      grid: { left: 60, right: 80, top: 60, bottom: 60 },
+      xAxis: {
+        type: 'category',
+        data: categories,
+        boundaryGap: false,
+        axisLine: { lineStyle: { color: '#475569' } },
+        axisLabel: { color: '#cbd5f5' },
+      },
+      yAxis: [
+        {
+          type: 'value',
+          name: '权益',
+          axisLine: { lineStyle: { color: '#475569' } },
+          axisLabel: { color: '#cbd5f5' },
+          splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.2)' } },
+        },
+      ],
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100 },
+        { start: 0, end: 100, height: 18, bottom: 18 },
+      ],
+      series: [
+        {
+          name: '权益',
+          type: 'line',
+          smooth: true,
+          symbol: 'none',
+          lineStyle: { width: 2, color: '#38bdf8' },
+          areaStyle: { color: 'rgba(56,189,248,0.08)' },
+          data: equitySeries,
+        },
+      ],
+    };
+
+    const chartDom = document.getElementById('chart');
+    const chart = echarts.init(chartDom);
+    if (!categories.length) {
+      chart.showLoading('default', { text: '没有可显示的回测数据' });
+    } else {
+      chart.setOption(option);
+    }
+    const zoomSlider = document.createElement('input');
+    zoomSlider.type = 'range';
+    zoomSlider.min = '1';
+    zoomSlider.max = '4';
+    zoomSlider.step = '0.1';
+    zoomSlider.value = '1';
+    zoomSlider.style.width = '100%';
+    zoomSlider.style.marginTop = '8px';
+    zoomSlider.style.cursor = 'pointer';
+    document.body.appendChild(zoomSlider);
+
+    function applyZoom(factor) {
+      const values = equitySeries.map(item => Number(item[1]) || 0);
+      if (!values.length) return;
+      const minVal = Math.min(...values);
+      const maxVal = Math.max(...values);
+      const center = (minVal + maxVal) / 2;
+      const range = (maxVal - minVal) || center * 0.02 || 1;
+      const halfSpan = (range / factor) / 2;
+      const axis = option.yAxis[0];
+      axis.min = center - halfSpan;
+      axis.max = center + halfSpan;
+      chart.setOption({ yAxis: option.yAxis });
+    }
+
+    zoomSlider.addEventListener('input', event => {
+      const factor = Number(event.target.value) || 1;
+      applyZoom(factor);
+    });
+
+    window.addEventListener('resize', () => chart.resize());
+    applyZoom(1);
+  </script>
+</body>
+</html>

@@ -233,14 +233,28 @@ class KLineController(QtCore.QObject):
         self.current_markers = list(markers)
         self.current_overlays = list(overlays)
 
-    def render_from_database(self, table: str, markers: Optional[List[Dict[str, Any]]] = None, overlays: Optional[List[Dict[str, Any]]] = None) -> None:
+    def render_from_database(
+        self,
+        table: str,
+        markers: Optional[List[Dict[str, Any]]] = None,
+        overlays: Optional[List[Dict[str, Any]]] = None,
+        *,
+        include_annotations: bool = False,
+    ) -> None:
         if load_candles_from_sqlite is None:
             return
         data = load_candles_from_sqlite(self.db_path, table)
         if not data:
             return
         candles, volumes, instrument = data
-        self._render_chart(candles, volumes, instrument, markers, overlays)
+        self._render_chart(
+            candles,
+            volumes,
+            instrument,
+            markers,
+            overlays,
+            include_annotations=include_annotations,
+        )
 
     # ------------------------------------------------------------------
     # 事件处理
@@ -360,7 +374,7 @@ class KLineController(QtCore.QObject):
         self._candle_loader.failed.connect(lambda e: self._log(f"加载 K 线失败: {e}"))
         self._candle_load_thread.start()
 
-    def _apply_symbol_filter(self, *, select: Optional[str], maintain_selection: bool) -> None:
+    def _apply_symbol_filter(self, *, select: Optional[str] = None, maintain_selection: bool) -> None:
         query = self.symbol_search.text().strip().lower()
         self.filtered_symbol_entries = []
         for entry in self.symbol_entries:
@@ -441,21 +455,28 @@ class KLineController(QtCore.QObject):
         instrument: Optional[Dict[str, str]] = None,
         markers: Optional[List[Dict[str, Any]]] = None,
         overlays: Optional[List[Dict[str, Any]]] = None,
+        *,
+        include_annotations: bool = False,
     ) -> None:
         self.current_candles = list(candles) if candles else []
-        if markers is not None:
-            current_markers = markers
-        elif self.display_manager:
-            current_markers = self.display_manager.get_current_markers()
-        else:
-            current_markers = self.current_markers
+        if include_annotations:
+            if markers is not None:
+                current_markers = markers
+            elif self.display_manager:
+                current_markers = self.display_manager.get_current_markers()
+            else:
+                current_markers = self.current_markers
 
-        if overlays is not None:
-            current_overlays = overlays
-        elif self.display_manager:
-            current_overlays = self.display_manager.get_current_overlays()
+            if overlays is not None:
+                current_overlays = overlays
+            elif self.display_manager:
+                current_overlays = self.display_manager.get_current_overlays()
+            else:
+                current_overlays = self.current_overlays
         else:
-            current_overlays = self.current_overlays
+            # Keep main TradingView chart clean; strategy previews live in the ECharts dialog.
+            current_markers = []
+            current_overlays = []
 
         if render_html is None:
             return

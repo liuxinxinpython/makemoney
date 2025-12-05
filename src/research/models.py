@@ -43,6 +43,9 @@ class StrategyContext:
     symbol: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
     current_only: bool = True  # True when just rendering preview on current chart
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    mode: str = "preview"
 
 
 @dataclass(slots=True)
@@ -65,6 +68,10 @@ class BacktestRequest:
     end_date: Optional[date]
     initial_cash: float = 1_000_000.0
     params: Dict[str, Any] = field(default_factory=dict)
+    max_positions: int = 5
+    position_pct: float = 0.2  # fraction of equity per new position
+    commission_rate: float = 0.0003
+    slippage: float = 0.0005
 
 
 @dataclass(slots=True)
@@ -91,5 +98,9 @@ class ScanResult:
     symbol: str
     table_name: str
     score: float
+    entry_date: Optional[str] = None
+    entry_price: Optional[float] = None
+    confidence: Optional[float] = None
     signals: List[Dict[str, Any]] = field(default_factory=list)
+    extra_signals: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)

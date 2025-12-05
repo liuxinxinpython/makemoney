@@ -13,6 +13,7 @@ class DisplayResult:
     overlays: List[Dict[str, Any]] = None
     annotations: List[Dict[str, Any]] = None
     status_message: Optional[str] = None
+    extra_data: Dict[str, Any] = None
 
     def __post_init__(self):
         if self.markers is None:
@@ -21,6 +22,8 @@ class DisplayResult:
             self.overlays = []
         if self.annotations is None:
             self.annotations = []
+        if self.extra_data is None:
+            self.extra_data = {}
 
 
 class DisplayInterface(Protocol):

@@ -12,6 +12,17 @@ try:
 except Exception:  # pragma: no cover - optional import
     ZigZagWavePeaksValleysStrategy = None
 
+try:
+    from ..rendering import ECHARTS_PREVIEW_TEMPLATE_PATH, render_echarts_preview  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional import
+    render_echarts_preview = None
+    ECHARTS_PREVIEW_TEMPLATE_PATH = None
+
+try:
+    from .echarts_preview_dialog import EChartsPreviewDialog
+except Exception:  # pragma: no cover - optional import
+    EChartsPreviewDialog = None
+
 
 class StrategyMenuController(QtCore.QObject):
     """负责选股菜单的策略注册与触发逻辑。"""
@@ -38,6 +49,7 @@ class StrategyMenuController(QtCore.QObject):
         self._selector_available = selector_available
         self._strategy_definitions: List[Dict[str, Any]] = []
         self._actions: List[QtWidgets.QAction] = []
+        self._echarts_dialog: Optional[EChartsPreviewDialog] = None
 
     def clear(self) -> None:
         self._strategy_definitions.clear()
@@ -138,15 +150,124 @@ class StrategyMenuController(QtCore.QObject):
             controller.render_from_database(current_table)
             self.status_bar.showMessage("ZigZag 检测完成 (无标记)")
             return
+        extra_data: Dict[str, Any] = {}
+        if isinstance(result, dict):
+            markers = list(result.get("markers", []) or [])
+            overlays = list(result.get("overlays", []) or [])
+            status_message = result.get("status_message", "")
+            extra_data = dict(result.get("extra_data", {}) or {})
+        else:
+            markers = list(getattr(result, "markers", []) or [])
+            overlays = list(getattr(result, "overlays", []) or [])
+            status_message = getattr(result, "status_message", "")
+            extra_data = dict(getattr(result, "extra_data", {}) or {})
 
-        markers = result.get("markers", []) if isinstance(result, dict) else result.markers
-        overlays: List[Dict[str, Any]] = []
         controller.set_markers(markers, overlays)
-        controller.render_from_database(current_table, markers=markers, overlays=overlays)
+        controller.render_from_database(current_table)
+        self._show_echarts_preview("ZigZag波峰波谷", markers, overlays, extra_data)
 
-        status_message = result.get("status_message", "") if isinstance(result, dict) else result.status_message
         self.status_bar.showMessage(status_message or "ZigZag 检测完成")
         self._log("ZigZag 策略执行完成")
+
+    def _ensure_echarts_dialog(self) -> Optional[EChartsPreviewDialog]:
+        if EChartsPreviewDialog is None or render_echarts_preview is None:
+            return None
+        if self._echarts_dialog is None:
+            template_path = ECHARTS_PREVIEW_TEMPLATE_PATH
+            if template_path is None:
+                return None
+            self._echarts_dialog = EChartsPreviewDialog(template_path, self.parent_window)
+        return self._echarts_dialog
+
+    def _show_echarts_preview(
+        self,
+        title: str,
+        markers: List[Dict[str, Any]],
+        overlays: List[Dict[str, Any]],
+        extra_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if self.kline_controller is None:
+            return
+        dialog = self._ensure_echarts_dialog()
+        if dialog is None:
+            return
+        candles = getattr(self.kline_controller, "current_candles", None)
+        if not candles:
+            return
+        volumes = getattr(self.kline_controller, "current_volumes", None)
+        instrument = getattr(self.kline_controller, "current_instrument", None)
+        strokes = list((extra_data or {}).get("strokes", []) or [])
+        preview_markers = self._markers_with_trade_signals(markers, extra_data, prefix=title)
+        try:
+            html = render_echarts_preview(
+                candles=candles,
+                volumes=list(volumes or []),
+                markers=preview_markers,
+                overlays=overlays,
+                instrument=instrument,
+                strokes=strokes,
+                title=title,
+            )
+        except Exception as exc:
+            self._log(f"ECharts 预览渲染失败: {exc}")
+            return
+        dialog.show_html(f"{title} · ECharts", html)
+
+    @staticmethod
+    def _markers_with_trade_signals(
+        markers: List[Dict[str, Any]],
+        extra_data: Optional[Dict[str, Any]],
+        *,
+        prefix: str,
+    ) -> List[Dict[str, Any]]:
+        trades = list((extra_data or {}).get("trades", []) or [])
+        if not trades:
+            return markers
+        enriched = list(markers)
+        buy_times = {m.get("time") for m in markers if isinstance(m.get("text"), str) and "BUY" in m["text"].upper()}
+        sell_times = {m.get("time") for m in markers if isinstance(m.get("text"), str) and "SELL" in m["text"].upper()}
+        for idx, trade in enumerate(trades):
+            entry_time = trade.get("entry_time") or trade.get("entryTime")
+            entry_price = StrategyMenuController._safe_float(trade.get("entry_price") or trade.get("entryPrice"))
+            entry_label = trade.get("entry_reason") or trade.get("entryReason")
+            if entry_time and entry_time not in buy_times:
+                text = entry_label or (f"BUY {entry_price:.2f}" if entry_price is not None else "BUY")
+                enriched.append(
+                    {
+                        "id": f"{prefix}_buy_{idx}",
+                        "time": entry_time,
+                        "position": "belowBar",
+                        "color": "#22c55e",
+                        "shape": "triangle",
+                        "text": text,
+                    }
+                )
+                buy_times.add(entry_time)
+
+            exit_time = trade.get("exit_time") or trade.get("exitTime")
+            exit_price = StrategyMenuController._safe_float(trade.get("exit_price") or trade.get("exitPrice"))
+            exit_label = trade.get("exit_reason") or trade.get("exitReason")
+            if exit_time and exit_time not in sell_times:
+                text = exit_label or (f"SELL {exit_price:.2f}" if exit_price is not None else "SELL")
+                enriched.append(
+                    {
+                        "id": f"{prefix}_sell_{idx}",
+                        "time": exit_time,
+                        "position": "aboveBar",
+                        "color": "#f87171",
+                        "shape": "triangle",
+                        "text": text,
+                    }
+                )
+                sell_times.add(exit_time)
+        return enriched
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
 
 __all__ = ["StrategyMenuController"]

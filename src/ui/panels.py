@@ -1,7 +1,8 @@
 ﻿from __future__ import annotations
 
+import csv
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore[import-not-found]
 
@@ -16,6 +17,8 @@ from ..research import (
     StrategyRunResult,
     StrategyScanner,
 )
+from ..rendering.render_utils import render_backtest_equity
+from .echarts_preview_dialog import EChartsPreviewDialog
 
 
 class StrategyWorkbenchPanel(QtWidgets.QWidget):
@@ -25,6 +28,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self,
         registry: StrategyRegistry,
         universe_provider: Callable[[], List[str]],
+        selected_symbol_provider: Callable[[], Optional[str]],
         db_path_provider: Callable[[], Path],
         preview_handler: Callable[[str, Dict[str, object]], Optional[StrategyRunResult]],
         chart_focus_handler: Callable[[], None],
@@ -34,6 +38,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         super().__init__(parent)
         self.registry = registry
         self.universe_provider = universe_provider
+        self.selected_symbol_provider = selected_symbol_provider
         self.db_path_provider = db_path_provider
         self.preview_handler = preview_handler
         self.chart_focus_handler = chart_focus_handler
@@ -42,19 +47,33 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.current_strategy_key: Optional[str] = None
         self.param_widgets: Dict[str, QtWidgets.QWidget] = {}
         self.scan_results: List[ScanResult] = []
+        self.backtest_results: List[Dict[str, Any]] = []
+        initial_symbol = self.selected_symbol_provider() if selected_symbol_provider else None
+        self._current_selected_symbol: Optional[str] = initial_symbol
+        self.latest_backtest_result: Optional[BacktestResult] = None
+        base_dir = Path(__file__).resolve().parent.parent
+        self.backtest_equity_template = base_dir / 'rendering' / 'templates' / 'backtest_equity.html'
+        self._equity_dialog: Optional[EChartsPreviewDialog] = None
 
         self.scanner = StrategyScanner(registry)
         self.scanner.progress.connect(self._append_scan_log)
+        self.scanner.finished.connect(self._on_scan_finished)
+        self.scanner.failed.connect(self._on_scan_failed)
+        self.scanner.cancelled.connect(self._on_scan_cancelled)
         self.engine = BacktestEngine(registry)
         self.engine.progress.connect(self._append_backtest_log)
         self.engine.finished.connect(self._on_backtest_finished)
         self.engine.failed.connect(self._on_backtest_failed)
+        self.engine.cancelled.connect(self._on_backtest_cancelled)
 
         self.scan_kpis: Dict[str, QtWidgets.QLabel] = {}
         self.backtest_kpis: Dict[str, QtWidgets.QLabel] = {}
+        self.scan_running = False
+        self.backtest_running = False
 
         self._build_ui()
         self.refresh_strategy_items()
+        self._apply_auto_universe_symbol()
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -146,7 +165,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
     def _build_result_tabs(self) -> QtWidgets.QTabWidget:
         self.result_tabs = QtWidgets.QTabWidget(self)
         self.result_tabs.setObjectName('WorkbenchTabs')
-        self.result_tabs.addTab(self._build_scan_tab(), '批量扫描')
+        self.result_tabs.addTab(self._build_scan_tab(), '策略选股')
         self.result_tabs.addTab(self._build_backtest_tab(), '历史回测')
         return self.result_tabs
 
@@ -178,15 +197,31 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         layout.addLayout(form)
 
         action_row = QtWidgets.QHBoxLayout()
-        self.scan_button = QtWidgets.QPushButton('运行扫描', tab)
+        self.scan_button = QtWidgets.QPushButton('开始选股', tab)
         self.scan_button.clicked.connect(self._run_scan)
         action_row.addWidget(self.scan_button)
+
+        self.scan_cancel_button = QtWidgets.QPushButton('取消选股', tab)
+        self.scan_cancel_button.clicked.connect(self._cancel_scan)
+        self.scan_cancel_button.setVisible(False)
+        action_row.addWidget(self.scan_cancel_button)
+
         action_row.addStretch(1)
+
+        self.scan_export_button = QtWidgets.QPushButton('导出 CSV', tab)
+        self.scan_export_button.setEnabled(False)
+        self.scan_export_button.clicked.connect(self._export_scan_results)
+        action_row.addWidget(self.scan_export_button)
+
+        self.scan_copy_button = QtWidgets.QPushButton('复制代码', tab)
+        self.scan_copy_button.setEnabled(False)
+        self.scan_copy_button.clicked.connect(self._copy_scan_symbols)
+        action_row.addWidget(self.scan_copy_button)
         layout.addLayout(action_row)
 
         self.scan_table = QtWidgets.QTableWidget(tab)
-        self.scan_table.setColumnCount(4)
-        self.scan_table.setHorizontalHeaderLabels(['排名', '股票', '得分', '备注'])
+        self.scan_table.setColumnCount(6)
+        self.scan_table.setHorizontalHeaderLabels(['排名', '股票', '买入日期', '买入价', '得分', '备注'])
         self.scan_table.horizontalHeader().setStretchLastSection(True)
         self.scan_table.verticalHeader().setVisible(False)
         self.scan_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -212,6 +247,8 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         form = QtWidgets.QFormLayout()
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         self.backtest_universe = QtWidgets.QLineEdit(tab)
+        self.backtest_universe.setClearButtonEnabled(True)
+        self.backtest_universe.textChanged.connect(lambda _: self._on_universe_text_changed(self.backtest_universe))
         self.backtest_universe.setPlaceholderText('留空使用全部股票')
         form.addRow('股票池:', self.backtest_universe)
 
@@ -230,14 +267,64 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.backtest_cash.setSingleStep(100_000)
         self.backtest_cash.setValue(1_000_000)
         form.addRow('初始资金:', self.backtest_cash)
+
+        self.backtest_max_positions = QtWidgets.QSpinBox(tab)
+        self.backtest_max_positions.setRange(1, 50)
+        self.backtest_max_positions.setValue(5)
+        form.addRow('最大持仓数:', self.backtest_max_positions)
+
+        self.backtest_position_pct = QtWidgets.QDoubleSpinBox(tab)
+        self.backtest_position_pct.setRange(1.0, 100.0)
+        self.backtest_position_pct.setDecimals(1)
+        self.backtest_position_pct.setSingleStep(5.0)
+        self.backtest_position_pct.setSuffix('%')
+        self.backtest_position_pct.setValue(20.0)
+        form.addRow('单笔仓位:', self.backtest_position_pct)
+
+        self.backtest_commission = QtWidgets.QDoubleSpinBox(tab)
+        self.backtest_commission.setRange(0.0, 1.0)
+        self.backtest_commission.setDecimals(3)
+        self.backtest_commission.setSingleStep(0.01)
+        self.backtest_commission.setSuffix('%')
+        self.backtest_commission.setValue(0.03)
+        form.addRow('佣金费率:', self.backtest_commission)
+
+        self.backtest_slippage = QtWidgets.QDoubleSpinBox(tab)
+        self.backtest_slippage.setRange(0.0, 1.0)
+        self.backtest_slippage.setDecimals(3)
+        self.backtest_slippage.setSingleStep(0.01)
+        self.backtest_slippage.setSuffix('%')
+        self.backtest_slippage.setValue(0.05)
+        form.addRow('滑点假设:', self.backtest_slippage)
         layout.addLayout(form)
 
         action_row = QtWidgets.QHBoxLayout()
         self.backtest_button = QtWidgets.QPushButton('运行回测', tab)
         self.backtest_button.clicked.connect(self._run_backtest)
         action_row.addWidget(self.backtest_button)
+        self.backtest_cancel_button = QtWidgets.QPushButton('取消回测', tab)
+        self.backtest_cancel_button.clicked.connect(self._cancel_backtest)
+        self.backtest_cancel_button.setVisible(False)
+        action_row.addWidget(self.backtest_cancel_button)
+        self.backtest_equity_button = QtWidgets.QPushButton('查看收益曲线', tab)
+        self.backtest_equity_button.setEnabled(False)
+        self.backtest_equity_button.clicked.connect(self._show_equity_curve)
+        action_row.addWidget(self.backtest_equity_button)
         action_row.addStretch(1)
         layout.addLayout(action_row)
+
+        self.backtest_table = QtWidgets.QTableWidget(tab)
+        self.backtest_table.setColumnCount(8)
+        self.backtest_table.setHorizontalHeaderLabels([
+            '股票', '买入日', '卖出日', '仓位(股)', '买入价', '卖出价', '收益%', '收益额',
+        ])
+        self.backtest_table.verticalHeader().setVisible(False)
+        self.backtest_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.backtest_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.backtest_table.setAlternatingRowColors(True)
+        header = self.backtest_table.horizontalHeader()
+        header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        layout.addWidget(self.backtest_table, 1)
 
         self.backtest_log = QtWidgets.QTextEdit(tab)
         self.backtest_log.setReadOnly(True)
@@ -390,6 +477,15 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         raw = text_field.text().strip()
         if raw:
             return [token.strip() for token in raw.split(',') if token.strip()]
+        auto_value = text_field.property('autoFilledValue')
+        if isinstance(auto_value, str):
+            if auto_value:
+                return [auto_value]
+            return self.universe_provider()
+        if self.selected_symbol_provider:
+            selected = self.selected_symbol_provider()
+            if selected:
+                return [selected]
         return self.universe_provider()
 
     def _run_preview(self) -> None:
@@ -430,13 +526,19 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             end_date=self.scan_end.date().toPyDate(),
             params=self._collect_params(),
         )
-        self.scan_log.append('开始扫描...')
+        self.scan_log.append('开始选股...')
+        self._toggle_scan_controls(True)
         try:
-            results = self.scanner.run(request, db_path)
+            self.scanner.run_async(request, db_path)
         except Exception as exc:  # pragma: no cover
-            QtWidgets.QMessageBox.critical(self, '扫描失败', str(exc))
+            self._toggle_scan_controls(False)
+            QtWidgets.QMessageBox.critical(self, '扫描启动失败', str(exc))
+
+    def _cancel_scan(self) -> None:
+        if not self.scan_running:
             return
-        self._populate_scan_results(results)
+        self.scan_log.append('正在取消选股...')
+        self.scanner.cancel_async()
 
     def _populate_scan_results(self, results: List[ScanResult]) -> None:
         self.scan_results = results
@@ -444,10 +546,97 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         for row, result in enumerate(results):
             self.scan_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(row + 1)))
             self.scan_table.setItem(row, 1, QtWidgets.QTableWidgetItem(result.symbol))
-            self.scan_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(result.score)))
-            self.scan_table.setItem(row, 3, QtWidgets.QTableWidgetItem(result.metadata.get('status', '')))
-        self.scan_log.append(f'扫描完成，共 {len(results)} 条结果')
+            self.scan_table.setItem(row, 2, QtWidgets.QTableWidgetItem(result.entry_date or ''))
+            price_text = f"{result.entry_price:.2f}" if isinstance(result.entry_price, (int, float)) else ''
+            self.scan_table.setItem(row, 3, QtWidgets.QTableWidgetItem(price_text))
+            score_text = f"{result.score:.2f}" if isinstance(result.score, (int, float)) else str(result.score)
+            self.scan_table.setItem(row, 4, QtWidgets.QTableWidgetItem(score_text))
+            remark = result.metadata.get('note') or result.metadata.get('status', '')
+            self.scan_table.setItem(row, 5, QtWidgets.QTableWidgetItem(remark))
+        self.scan_log.append(f'选股完成，共 {len(results)} 条结果')
         self._update_scan_kpis(results)
+        self._update_scan_action_state()
+
+    def _populate_backtest_table(self, trades: List[Dict[str, Any]]) -> None:
+        self.backtest_results = trades
+        self.backtest_table.setRowCount(len(trades))
+        for row, trade in enumerate(trades):
+            symbol_item = QtWidgets.QTableWidgetItem(str(trade.get('symbol', '')))
+            entry_date_item = QtWidgets.QTableWidgetItem(str(trade.get('entry_date', '')))
+            exit_date_item = QtWidgets.QTableWidgetItem(str(trade.get('exit_date', '')))
+            shares_value = trade.get('shares', 0.0)
+            shares_item = QtWidgets.QTableWidgetItem(f"{shares_value:.2f}")
+            entry_price = trade.get('entry_price')
+            exit_price = trade.get('exit_price')
+            entry_price_item = QtWidgets.QTableWidgetItem(f"{entry_price:.2f}" if isinstance(entry_price, (int, float)) else '')
+            exit_price_item = QtWidgets.QTableWidgetItem(f"{exit_price:.2f}" if isinstance(exit_price, (int, float)) else '')
+            return_pct = trade.get('return_pct')
+            return_item = QtWidgets.QTableWidgetItem(f"{(return_pct or 0) * 100:.2f}%")
+            pnl = trade.get('pnl') or 0.0
+            pnl_item = QtWidgets.QTableWidgetItem(f"{pnl:.2f}")
+            color_positive = QtGui.QColor('#ef4444')
+            color_negative = QtGui.QColor('#16a34a')
+            if pnl_item and isinstance(pnl, (int, float)):
+                pnl_item.setForeground(QtGui.QBrush(color_positive if pnl >= 0 else color_negative))
+            if return_item and isinstance(return_pct, (int, float)):
+                return_item.setForeground(QtGui.QBrush(color_positive if return_pct >= 0 else color_negative))
+
+            self.backtest_table.setItem(row, 0, symbol_item)
+            self.backtest_table.setItem(row, 1, entry_date_item)
+            self.backtest_table.setItem(row, 2, exit_date_item)
+            self.backtest_table.setItem(row, 3, shares_item)
+            self.backtest_table.setItem(row, 4, entry_price_item)
+            self.backtest_table.setItem(row, 5, exit_price_item)
+            self.backtest_table.setItem(row, 6, return_item)
+            self.backtest_table.setItem(row, 7, pnl_item)
+
+    def update_selected_symbol(self, symbol: Optional[str]) -> None:
+        self._current_selected_symbol = symbol
+        self._apply_auto_universe_symbol()
+
+    def _apply_auto_universe_symbol(self) -> None:
+        if not hasattr(self, 'backtest_universe'):
+            return
+        auto_flag = bool(self.backtest_universe.property('autoFilledValue'))
+        current_text = self.backtest_universe.text().strip()
+        if current_text and not auto_flag:
+            return
+        self._set_universe_field(self.backtest_universe, self._current_selected_symbol)
+
+    def _set_universe_field(self, field: QtWidgets.QLineEdit, symbol: Optional[str]) -> None:
+        field.blockSignals(True)
+        field.setText(symbol or '')
+        field.blockSignals(False)
+        field.setProperty('autoFilledValue', symbol or '')
+
+    def _on_universe_text_changed(self, field: QtWidgets.QLineEdit) -> None:
+        field.setProperty('autoFilledValue', '')
+
+
+    def _ensure_equity_dialog(self) -> EChartsPreviewDialog:
+        if self._equity_dialog is None:
+            if not self.backtest_equity_template.exists():
+                raise RuntimeError(f'缺少模板文件: {self.backtest_equity_template}')
+            self._equity_dialog = EChartsPreviewDialog(self.backtest_equity_template, self)
+        return self._equity_dialog
+
+    def _show_equity_curve(self) -> None:
+        if not self.latest_backtest_result:
+            QtWidgets.QMessageBox.information(self, '暂无数据', '请先运行一次回测。')
+            return
+        title = f"收益曲线 · {self.latest_backtest_result.strategy_key}"
+        try:
+            html = render_backtest_equity(
+                self.latest_backtest_result.equity_curve,
+                trades=self.latest_backtest_result.trades,
+                metrics=self.latest_backtest_result.metrics,
+                title=title,
+            )
+            dialog = self._ensure_equity_dialog()
+        except Exception as exc:  # pragma: no cover - runtime errors
+            QtWidgets.QMessageBox.critical(self, '渲染失败', str(exc))
+            return
+        dialog.show_html(title, html)
 
     def _update_scan_kpis(self, results: List[ScanResult]) -> None:
         total = len(results)
@@ -467,6 +656,83 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
 
     def _append_scan_log(self, message: str) -> None:
         self.scan_log.append(message)
+
+    def _on_scan_finished(self, results: object) -> None:
+        parsed = list(results or [])
+        self._populate_scan_results(parsed)
+        self._toggle_scan_controls(False)
+
+    def _on_scan_failed(self, message: str) -> None:
+        QtWidgets.QMessageBox.critical(self, '选股失败', message)
+        self._toggle_scan_controls(False)
+
+    def _on_scan_cancelled(self) -> None:
+        self.scan_log.append('选股已取消')
+        self._toggle_scan_controls(False)
+
+    def _toggle_scan_controls(self, running: bool) -> None:
+        self.scan_running = running
+        self.scan_button.setEnabled(not running)
+        self.scan_cancel_button.setVisible(running)
+        self.scan_cancel_button.setEnabled(running)
+        self._update_scan_action_state()
+
+    def _update_scan_action_state(self) -> None:
+        has_results = bool(self.scan_results)
+        enabled = has_results and not self.scan_running
+        self.scan_export_button.setEnabled(enabled)
+        self.scan_copy_button.setEnabled(enabled)
+
+    def _export_scan_results(self) -> None:
+        if not self.scan_results:
+            QtWidgets.QMessageBox.information(self, '无数据', '当前没有可导出的选股结果。')
+            return
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            '导出策略选股结果',
+            'strategy_picks.csv',
+            'CSV 文件 (*.csv)'
+        )
+        if not file_path:
+            return
+        try:
+            with open(file_path, 'w', encoding='utf-8-sig', newline='') as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow(['排名', '股票', '买入日期', '买入价', '得分', '备注'])
+                for idx, result in enumerate(self.scan_results, start=1):
+                    price = f"{result.entry_price:.2f}" if isinstance(result.entry_price, (int, float)) else ''
+                    remark = result.metadata.get('note') or result.metadata.get('status', '')
+                    writer.writerow([
+                        idx,
+                        result.symbol,
+                        result.entry_date or '',
+                        price,
+                        result.score,
+                        remark,
+                    ])
+        except Exception as exc:  # pragma: no cover - file errors
+            QtWidgets.QMessageBox.critical(self, '导出失败', str(exc))
+            return
+        self.scan_log.append(f'已导出到 {file_path}')
+
+    def _copy_scan_symbols(self) -> None:
+        if not self.scan_results:
+            QtWidgets.QMessageBox.information(self, '无数据', '当前没有可复制的选股结果。')
+            return
+        symbols = [result.symbol for result in self.scan_results]
+        QtWidgets.QApplication.clipboard().setText('\n'.join(symbols))
+        self.scan_log.append('已复制选股结果到剪贴板')
+
+    def _toggle_backtest_controls(self, running: bool) -> None:
+        self.backtest_running = running
+        if hasattr(self, 'backtest_button'):
+            self.backtest_button.setEnabled(not running)
+        if hasattr(self, 'backtest_cancel_button'):
+            self.backtest_cancel_button.setVisible(running)
+            self.backtest_cancel_button.setEnabled(running)
+        if hasattr(self, 'backtest_equity_button'):
+            can_show = bool(self.latest_backtest_result) and not running
+            self.backtest_equity_button.setEnabled(can_show)
 
     def _run_backtest(self) -> None:
         definition = self._current_definition()
@@ -489,25 +755,47 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             end_date=self.backtest_end.date().toPyDate(),
             initial_cash=float(self.backtest_cash.value()),
             params=self._collect_params(),
+            max_positions=int(self.backtest_max_positions.value()),
+            position_pct=float(self.backtest_position_pct.value()) / 100.0,
+            commission_rate=float(self.backtest_commission.value()) / 100.0,
+            slippage=float(self.backtest_slippage.value()) / 100.0,
         )
+        self.latest_backtest_result = None
         self.backtest_log.append('开始回测...')
-        self.engine.run(request, db_path)
+        self.backtest_table.setRowCount(0)
+        self._toggle_backtest_controls(True)
+        try:
+            self.engine.run_async(request, db_path)
+        except Exception as exc:  # pragma: no cover - unexpected failures
+            self._toggle_backtest_controls(False)
+            QtWidgets.QMessageBox.critical(self, '回测失败', str(exc))
+
+    def _cancel_backtest(self) -> None:
+        if not self.backtest_running:
+            return
+        self.backtest_log.append('正在取消回测...')
+        self.engine.cancel_async()
 
     def _append_backtest_log(self, message: str) -> None:
         self.backtest_log.append(message)
 
     def _on_backtest_finished(self, result: BacktestResult) -> None:
+        self.latest_backtest_result = result
+        self._toggle_backtest_controls(False)
         self.backtest_log.append('回测完成')
-        self.backtest_log.append(str(result.metrics))
+        self.backtest_log.append(result.notes or str(result.metrics))
         self.backtest_log.append('---')
+        self._populate_backtest_table(result.trades)
         self._update_backtest_kpis(result)
 
     def _update_backtest_kpis(self, result: BacktestResult) -> None:
         net = result.metrics.get('net_profit', 0.0)
         drawdown = result.metrics.get('max_drawdown', 0.0)
-        trades = result.trades
-        wins = sum(1 for trade in trades if trade.get('pnl', 0) > 0)
-        win_rate = wins / len(trades) if trades else 0.0
+        win_rate = result.metrics.get('win_rate')
+        if win_rate is None:
+            trades = result.trades
+            wins = sum(1 for trade in trades if trade.get('pnl', 0) > 0)
+            win_rate = wins / len(trades) if trades else 0.0
         self._assign_kpi_values(self.backtest_kpis, {
             '净利润': f'{net:.2f}',
             '最大回撤': f'{drawdown:.2f}',
@@ -519,4 +807,9 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             widget.setText(values.get(key, '--'))
 
     def _on_backtest_failed(self, message: str) -> None:
+        self._toggle_backtest_controls(False)
         QtWidgets.QMessageBox.critical(self, '回测失败', message)
+
+    def _on_backtest_cancelled(self) -> None:
+        self._toggle_backtest_controls(False)
+        self.backtest_log.append('回测已取消')

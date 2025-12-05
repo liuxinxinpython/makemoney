@@ -44,6 +44,12 @@ except Exception:
     KLineController = None
     StrategyWorkbenchController = None
 
+try:
+    from .rendering import render_echarts_demo, ECHARTS_TEMPLATE_PATH  # type: ignore[import-not-found]
+except Exception:
+    render_echarts_demo = None
+    ECHARTS_TEMPLATE_PATH = Path(__file__).parent / "rendering" / "templates" / "echarts_demo.html"
+
 
 class DebuggableWebEnginePage(QWebEnginePage):
     consoleMessage = QtCore.pyqtSignal(str)
@@ -118,6 +124,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.kline_controller: Optional[KLineController] = None
         self.workbench_controller: Optional[StrategyWorkbenchController] = None
         self.strategy_button: Optional[QtWidgets.QToolButton] = None
+        self.echarts_dialog: Optional[QtWidgets.QDialog] = None
 
         # Initialize display manager
         self.display_manager = DisplayManager() if DisplayManager else None
@@ -162,6 +169,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.action_refresh_symbols = QtWidgets.QAction("刷新标的列表", self)
         self.action_refresh_symbols.triggered.connect(self.refresh_symbols)
 
+        self.action_show_echarts_demo = QtWidgets.QAction("ECharts 演示", self)
+        self.action_show_echarts_demo.triggered.connect(self._show_echarts_demo)
+
         # 设置图标和工具提示,提升可用性
         style = QtWidgets.QApplication.style()
         try:
@@ -199,6 +209,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.import_menu.addAction(self.action_import_replace)
         menu_data.addMenu(self.import_menu)
         menu_data.addAction(self.action_refresh_symbols)
+
+        menu_view = self.menuBar().addMenu("视图")
+        menu_view.addAction(self.action_show_echarts_demo)
 
     def _create_toolbar(self) -> None:
         toolbar = self.addToolBar("导入")
@@ -274,6 +287,33 @@ class MainWindow(QtWidgets.QMainWindow):
             self._init_workbench_controller()
         if self.workbench_controller:
             self.workbench_controller.toggle_visibility(True)
+
+    def _show_echarts_demo(self) -> None:
+        if render_echarts_demo is None:
+            QtWidgets.QMessageBox.warning(self, "渲染模块缺失", "当前环境缺少 ECharts 模板，无法展示示例。")
+            return
+        candles = list(getattr(self.kline_controller, "current_candles", []) or [])
+        if not candles:
+            QtWidgets.QMessageBox.information(self, "缺少数据", "请先加载一只股票到主图，再查看示例。")
+            return
+        markers = list(getattr(self.kline_controller, "current_markers", []) or [])
+        overlays = list(getattr(self.kline_controller, "current_overlays", []) or [])
+        try:
+            html = render_echarts_demo(candles, markers, overlays)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "渲染失败", f"生成示例时出错: {exc}")
+            return
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("ECharts K线演示")
+        dialog.resize(960, 620)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        view = QWebEngineView(dialog)
+        base_url = QtCore.QUrl.fromLocalFile(str(ECHARTS_TEMPLATE_PATH))
+        view.setHtml(html, base_url)
+        layout.addWidget(view)
+        self.echarts_dialog = dialog
+        dialog.exec_()
 
     def _ensure_log_dialog(self, *, show: bool = False) -> None:
         if self.log_dialog is None:

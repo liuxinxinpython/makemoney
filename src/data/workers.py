@@ -14,9 +14,9 @@ except Exception:
     HAS_IMPORTER = False
 
 try:
-    from .volume_price_selector import load_price_frame
+    from .data_loader import load_candles_from_sqlite
 except Exception:
-    load_price_frame = None
+    load_candles_from_sqlite = None
 
 
 class ImportWorker(QtCore.QObject):
@@ -130,43 +130,10 @@ class CandleLoadWorker(QtCore.QObject):
     @QtCore.pyqtSlot()
     def run(self) -> None:
         try:
-            # Use pandas loader to read limited rows for the table
-            path_uri = Path(self.db_path).resolve().as_uri()
-            conn = sqlite3.connect(f'{path_uri}?mode=ro', uri=True, check_same_thread=False)
-            try:
-                if load_price_frame is None:
-                    self.failed.emit("缺少 volume_price_selector.load_price_frame 函数")
-                    return
-                df = load_price_frame(conn, self.table, self.lookback_days)
-                if df is None or df.empty:
-                    self.finished.emit(None)
-                    return
-                candles: List[Dict[str, Any]] = []
-                volumes: List[Dict[str, Any]] = []
-                instrument: Dict[str, str] = {"symbol": str(self.table).upper(), "name": ""}
-                for _, row in df.iterrows():
-                    ts = row["date"]
-                    if hasattr(ts, 'strftime'):
-                        date_str = ts.strftime('%Y-%m-%d')
-                    else:
-                        date_str = str(ts)
-                    open_ = float(row["open"])
-                    high = float(row["high"])
-                    low = float(row["low"])
-                    close = float(row["close"])
-                    candles.append({"time": date_str, "open": open_, "high": high, "low": low, "close": close})
-                    volumes.append({"time": date_str, "value": float(row.get("volume", 0.0)), "color": "#f03752" if close >= open_ else "#13b355"})
-                try:
-                    name = str(df["name"].iloc[-1]) if "name" in df.columns else ""
-                    symbol = str(df["symbol"].iloc[-1]) if "symbol" in df.columns else str(self.table).upper()
-                    instrument = {"symbol": symbol, "name": name}
-                except Exception:
-                    pass
-                self.finished.emit((candles, volumes, instrument))
-            finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+            if load_candles_from_sqlite is None:
+                raise RuntimeError("缺少 load_candles_from_sqlite 函数")
+            max_rows = self.lookback_days if self.lookback_days > 0 else None
+            payload = load_candles_from_sqlite(self.db_path, self.table, max_rows=max_rows)
+            self.finished.emit(payload)
         except Exception as exc:
             self.failed.emit(str(exc))
