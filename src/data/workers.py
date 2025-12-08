@@ -48,6 +48,13 @@ class ImportWorker(QtCore.QObject):
             self.failed.emit(str(exc))
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class SymbolLoadWorker(QtCore.QObject):
     """Background worker to enumerate tables and fetch last-symbol metadata from each table.
 
@@ -64,7 +71,37 @@ class SymbolLoadWorker(QtCore.QObject):
     @QtCore.pyqtSlot()
     def run(self) -> None:
         try:
-            entries: List[Dict[str, str]] = []
+            def fetch_latest_identity(
+                connection: sqlite3.Connection,
+                escaped_name: str,
+            ) -> Optional[Tuple[Any, Any, Any, Any, Any]]:
+                """Fetch basic identity plus last price/change metadata."""
+
+                queries: Tuple[Tuple[str, str], ...] = (
+                    ("symbol, name, close, chg_pct, prev_close", "rowid"),
+                    ("symbol, name, close, chg_pct, prev_close", "date"),
+                    ("symbol, name", "rowid"),
+                    ("symbol, name", "date"),
+                )
+
+                for columns, order_key in queries:
+                    query = (
+                        f'SELECT {columns} FROM "{escaped_name}" '
+                        f"ORDER BY {order_key} DESC LIMIT 1"
+                    )
+                    try:
+                        row = connection.execute(query).fetchone()
+                    except Exception:
+                        continue
+                    if not row:
+                        continue
+                    values = list(row)
+                    while len(values) < 5:
+                        values.append(None)
+                    return tuple(values[:5])
+                return None
+
+            entries: List[Dict[str, Any]] = []
             # We open a fresh connection on this worker thread -- sqlite is allowed to be read concurrently.
             path_uri = Path(self.db_path).resolve().as_uri()
             conn = sqlite3.connect(f'{path_uri}?mode=ro', uri=True, check_same_thread=False)
@@ -90,19 +127,40 @@ class SymbolLoadWorker(QtCore.QObject):
                         self.progress.emit(f"正在加载股票信息... ({i + 1}/{total_tables})")
                     
                     escaped = str(table_name).replace('"', '""')
+                    sym = str(table_name).upper()
+                    name = ""
+                    last_price: Optional[float] = None
+                    change_percent: Optional[float] = None
                     try:
-                        meta = conn.execute(f'SELECT symbol, name FROM "{escaped}" ORDER BY date DESC LIMIT 1')
-                        meta_row = meta.fetchone()
-                        if meta_row:
-                            sym = meta_row[0] if meta_row[0] is not None else str(table_name).upper()
-                            name = meta_row[1] if meta_row[1] is not None else ""
-                        else:
-                            sym = str(table_name).upper()
-                            name = ""
+                        latest = fetch_latest_identity(conn, escaped)
+                        if latest:
+                            latest_symbol, latest_name, raw_price, raw_change, raw_prev_close = latest
+                            if latest_symbol:
+                                sym = str(latest_symbol).strip().upper()
+                            if latest_name:
+                                name = str(latest_name).strip()
+                            last_price = _safe_float(raw_price)
+                            change_percent = _safe_float(raw_change)
+                            if change_percent is None:
+                                prev_close = _safe_float(raw_prev_close)
+                                if (
+                                    prev_close is not None
+                                    and prev_close != 0
+                                    and last_price is not None
+                                ):
+                                    change_percent = ((last_price - prev_close) / prev_close) * 100
                     except Exception:
-                        sym = str(table_name).upper()
-                        name = ""
-                    entries.append({"table": str(table_name), "symbol": sym, "name": name, "display": f"{sym} · {name}" if name else sym})
+                        pass
+
+                    entry: Dict[str, Any] = {
+                        "table": str(table_name),
+                        "symbol": sym,
+                        "name": name,
+                        "display": f"{sym} · {name}" if name else sym,
+                        "last_price": last_price,
+                        "change_percent": change_percent,
+                    }
+                    entries.append(entry)
                 
                 self.progress.emit(f"股票列表加载完成，共 {len(entries)} 个股票")
                 self.finished.emit(entries)

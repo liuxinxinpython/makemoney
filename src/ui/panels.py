@@ -36,6 +36,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        self.setObjectName('StrategyWorkbench')
         self.registry = registry
         self.universe_provider = universe_provider
         self.selected_symbol_provider = selected_symbol_provider
@@ -86,56 +87,63 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         title.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         layout.addWidget(title)
 
-        self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, self)
+        self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal, self)
         self.main_splitter.setObjectName('WorkbenchSplitter')
+        self.main_splitter.setChildrenCollapsible(False)
         self.main_splitter.addWidget(self._build_card_panel())
-        self.main_splitter.addWidget(self._build_detail_splitter())
+        self.main_splitter.addWidget(self._build_result_tabs())
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setSizes([320, 960])
         layout.addWidget(self.main_splitter, 1)
 
     def _build_card_panel(self) -> QtWidgets.QWidget:
         frame = QtWidgets.QFrame(self)
         frame.setObjectName('StrategyCardPanel')
+        frame.setMinimumWidth(280)
         frame_layout = QtWidgets.QVBoxLayout(frame)
-        frame_layout.setContentsMargins(0, 0, 0, 0)
-        frame_layout.setSpacing(6)
+        frame_layout.setContentsMargins(8, 8, 8, 8)
+        frame_layout.setSpacing(8)
 
-        header_layout = QtWidgets.QHBoxLayout()
+        header_layout = QtWidgets.QVBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
-        header_layout.addWidget(QtWidgets.QLabel('精选策略', frame))
-        header_layout.addStretch(1)
+        header_layout.setSpacing(6)
+
+        title_row = QtWidgets.QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
+        title = QtWidgets.QLabel('策略精选', frame)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
         self.card_filter = QtWidgets.QComboBox(frame)
         self.card_filter.addItems(['全部', '波动策略', '形态识别', '趋势跟踪'])
         self.card_filter.currentIndexChanged.connect(lambda _: self.refresh_strategy_items())
-        header_layout.addWidget(self.card_filter)
+        title_row.addWidget(self.card_filter)
+        header_layout.addLayout(title_row)
+
+        self.card_search = QtWidgets.QLineEdit(frame)
+        self.card_search.setPlaceholderText('搜索策略 / 关键词')
+        self.card_search.setClearButtonEnabled(True)
+        self.card_search.textChanged.connect(lambda _: self.refresh_strategy_items())
+        header_layout.addWidget(self.card_search)
         frame_layout.addLayout(header_layout)
 
         self.card_view = QtWidgets.QListWidget(frame)
-        self.card_view.setViewMode(QtWidgets.QListView.IconMode)
+        self.card_view.setObjectName('StrategyCardList')
+        self.card_view.setViewMode(QtWidgets.QListView.ListMode)
         self.card_view.setMovement(QtWidgets.QListView.Static)
-        self.card_view.setResizeMode(QtWidgets.QListView.Adjust)
-        self.card_view.setIconSize(QtCore.QSize(64, 64))
-        self.card_view.setGridSize(QtCore.QSize(180, 150))
-        self.card_view.setSpacing(12)
+        self.card_view.setSpacing(6)
+        self.card_view.setUniformItemSizes(False)
         self.card_view.setWordWrap(True)
         self.card_view.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.card_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.card_view.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.card_view.itemSelectionChanged.connect(self._on_card_selection_changed)
-        frame_layout.addWidget(self.card_view)
+        frame_layout.addWidget(self.card_view, 1)
         return frame
 
-    def _build_detail_splitter(self) -> QtWidgets.QSplitter:
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal, self)
-        splitter.setObjectName('WorkbenchDetailSplitter')
-        splitter.addWidget(self._build_detail_panel())
-        splitter.addWidget(self._build_result_tabs())
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        return splitter
-
-    def _build_detail_panel(self) -> QtWidgets.QWidget:
-        panel = QtWidgets.QFrame(self)
+    def _build_preview_tab(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QFrame(self.result_tabs)
         panel.setObjectName('StrategyDetailPanel')
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -154,6 +162,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
 
         preview_box = QtWidgets.QHBoxLayout()
         self.preview_button = QtWidgets.QPushButton('即时预览', panel)
+        self.preview_button.setProperty('class', 'primary')
         self.preview_button.clicked.connect(self._run_preview)
         preview_box.addWidget(self.preview_button)
         self.preview_status = QtWidgets.QLabel('', panel)
@@ -165,12 +174,14 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
     def _build_result_tabs(self) -> QtWidgets.QTabWidget:
         self.result_tabs = QtWidgets.QTabWidget(self)
         self.result_tabs.setObjectName('WorkbenchTabs')
+        self.result_tabs.addTab(self._build_preview_tab(), '策略预览')
         self.result_tabs.addTab(self._build_scan_tab(), '策略选股')
-        self.result_tabs.addTab(self._build_backtest_tab(), '历史回测')
+        self.result_tabs.addTab(self._build_backtest_tab(), '策略回测')
         return self.result_tabs
 
     def _build_scan_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget(self)
+        tab.setObjectName('ScanTab')
         layout = QtWidgets.QVBoxLayout(tab)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
@@ -198,10 +209,12 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
 
         action_row = QtWidgets.QHBoxLayout()
         self.scan_button = QtWidgets.QPushButton('开始选股', tab)
+        self.scan_button.setProperty('class', 'primary')
         self.scan_button.clicked.connect(self._run_scan)
         action_row.addWidget(self.scan_button)
 
         self.scan_cancel_button = QtWidgets.QPushButton('取消选股', tab)
+        self.scan_cancel_button.setProperty('class', 'danger')
         self.scan_cancel_button.clicked.connect(self._cancel_scan)
         self.scan_cancel_button.setVisible(False)
         action_row.addWidget(self.scan_cancel_button)
@@ -209,17 +222,20 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         action_row.addStretch(1)
 
         self.scan_export_button = QtWidgets.QPushButton('导出 CSV', tab)
+        self.scan_export_button.setProperty('class', 'ghost')
         self.scan_export_button.setEnabled(False)
         self.scan_export_button.clicked.connect(self._export_scan_results)
         action_row.addWidget(self.scan_export_button)
 
         self.scan_copy_button = QtWidgets.QPushButton('复制代码', tab)
+        self.scan_copy_button.setProperty('class', 'ghost')
         self.scan_copy_button.setEnabled(False)
         self.scan_copy_button.clicked.connect(self._copy_scan_symbols)
         action_row.addWidget(self.scan_copy_button)
         layout.addLayout(action_row)
 
         self.scan_table = QtWidgets.QTableWidget(tab)
+        self.scan_table.setProperty('class', 'data-table')
         self.scan_table.setColumnCount(6)
         self.scan_table.setHorizontalHeaderLabels(['排名', '股票', '买入日期', '买入价', '得分', '备注'])
         self.scan_table.horizontalHeader().setStretchLastSection(True)
@@ -229,6 +245,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         layout.addWidget(self.scan_table, 1)
 
         self.scan_log = QtWidgets.QTextEdit(tab)
+        self.scan_log.setObjectName('LogPanel')
         self.scan_log.setReadOnly(True)
         self.scan_log.setMaximumHeight(120)
         layout.addWidget(self.scan_log)
@@ -236,6 +253,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
 
     def _build_backtest_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget(self)
+        tab.setObjectName('BacktestTab')
         layout = QtWidgets.QVBoxLayout(tab)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
@@ -300,13 +318,16 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
 
         action_row = QtWidgets.QHBoxLayout()
         self.backtest_button = QtWidgets.QPushButton('运行回测', tab)
+        self.backtest_button.setProperty('class', 'primary')
         self.backtest_button.clicked.connect(self._run_backtest)
         action_row.addWidget(self.backtest_button)
         self.backtest_cancel_button = QtWidgets.QPushButton('取消回测', tab)
+        self.backtest_cancel_button.setProperty('class', 'danger')
         self.backtest_cancel_button.clicked.connect(self._cancel_backtest)
         self.backtest_cancel_button.setVisible(False)
         action_row.addWidget(self.backtest_cancel_button)
         self.backtest_equity_button = QtWidgets.QPushButton('查看收益曲线', tab)
+        self.backtest_equity_button.setProperty('class', 'ghost')
         self.backtest_equity_button.setEnabled(False)
         self.backtest_equity_button.clicked.connect(self._show_equity_curve)
         action_row.addWidget(self.backtest_equity_button)
@@ -314,6 +335,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         layout.addLayout(action_row)
 
         self.backtest_table = QtWidgets.QTableWidget(tab)
+        self.backtest_table.setProperty('class', 'data-table')
         self.backtest_table.setColumnCount(8)
         self.backtest_table.setHorizontalHeaderLabels([
             '股票', '买入日', '卖出日', '仓位(股)', '买入价', '卖出价', '收益%', '收益额',
@@ -327,6 +349,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         layout.addWidget(self.backtest_table, 1)
 
         self.backtest_log = QtWidgets.QTextEdit(tab)
+        self.backtest_log.setObjectName('LogPanel')
         self.backtest_log.setReadOnly(True)
         self.backtest_log.setMaximumHeight(200)
         layout.addWidget(self.backtest_log)
@@ -362,14 +385,27 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.card_view.blockSignals(True)
         self.card_view.clear()
         filter_text = self.card_filter.currentText() if hasattr(self, 'card_filter') else '全部'
+        search_text = self.card_search.text().strip().lower() if hasattr(self, 'card_search') else ''
 
         for definition in definitions:
             if filter_text != '全部' and filter_text not in definition.tags:
                 continue
-            item = QtWidgets.QListWidgetItem(definition.title)
+            haystack = ' '.join(filter(None, [definition.title, definition.description, ' '.join(definition.tags)])).lower()
+            if search_text and search_text not in haystack:
+                continue
+            snippet = (definition.description or '').replace('\n', ' ').strip()
+            if len(snippet) > 48:
+                snippet = snippet[:45] + '…'
+            meta = ' / '.join(definition.tags[:3])
+            secondary = meta or snippet
+            if not secondary:
+                secondary = '--'
+            display_text = f"{definition.title}\n{secondary}"
+            item = QtWidgets.QListWidgetItem(display_text)
             item.setData(QtCore.Qt.UserRole, definition.key)
             item.setToolTip(definition.description or '')
             item.setIcon(self._build_strategy_icon(definition))
+            item.setSizeHint(QtCore.QSize(260, 68))
             self.card_view.addItem(item)
 
         self.card_view.blockSignals(False)
@@ -379,7 +415,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             self._set_current_strategy(None)
 
     def _build_strategy_icon(self, definition: StrategyDefinition) -> QtGui.QIcon:
-        colors = ['#4DD0E1', '#82B1FF', '#FFAB91', '#B388FF', '#80CBC4']
+        colors = ['#1f5eff', '#0bbadf', '#64c5b1', '#ff915c', '#8c7bff']
         color = colors[hash(definition.key) % len(colors)]
         pix = QtGui.QPixmap(72, 72)
         pix.fill(QtCore.Qt.transparent)

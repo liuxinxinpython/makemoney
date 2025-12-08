@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from PyQt5 import QtCore, QtWidgets  # type: ignore[import-not-found]
 from PyQt5.QtWebEngineWidgets import QWebEngineView  # type: ignore[import-not-found]
@@ -32,11 +32,45 @@ try:
 except Exception:  # pragma: no cover - optional import
     DisplayManager = None
 
+if TYPE_CHECKING:  # pragma: no cover
+    from ..displays import DisplayManager as DisplayManagerType
+else:  # pragma: no cover
+    DisplayManagerType = Any
+
+
+class SymbolFilterWorker(QtCore.QObject):
+    """Background worker that filters large symbol datasets."""
+
+    result_ready = QtCore.pyqtSignal(int, object, str)
+    error = QtCore.pyqtSignal(int, str)
+
+    @QtCore.pyqtSlot(int, object, str)
+    def apply_filter(self, request_id: int, entries: object, query: str) -> None:
+        try:
+            dataset = list(entries or [])
+            query_lower = (query or "").strip().lower()
+            if not query_lower:
+                filtered = dataset
+            else:
+                filtered: List[Dict[str, Any]] = []
+                for entry in dataset:
+                    if not isinstance(entry, dict):
+                        continue
+                    haystacks = [entry.get("symbol", ""), entry.get("name", ""), entry.get("table", "")]
+                    haystacks = [str(value).lower() for value in haystacks if value]
+                    if any(query_lower in text for text in haystacks):
+                        filtered.append(entry)
+            self.result_ready.emit(request_id, filtered, query_lower)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            self.error.emit(request_id, str(exc))
+
 
 class KLineController(QtCore.QObject):
     """集中管理标的列表、K 线渲染和相关异步任务的控制器。"""
 
     symbol_changed = QtCore.pyqtSignal(str)
+    symbols_updated = QtCore.pyqtSignal(list)
+    filter_requested = QtCore.pyqtSignal(int, object, str)
 
     def __init__(
         self,
@@ -48,7 +82,7 @@ class KLineController(QtCore.QObject):
         symbol_search: QtWidgets.QLineEdit,
         db_path_getter: Callable[[], Path],
         log_handler: Callable[[str], None],
-        display_manager: Optional[DisplayManager] = None,
+            display_manager: Optional[DisplayManagerType] = None,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -61,8 +95,8 @@ class KLineController(QtCore.QObject):
         self._log = log_handler
         self.display_manager = display_manager
 
-        self.symbol_entries: List[Dict[str, str]] = []
-        self.filtered_symbol_entries: List[Dict[str, str]] = []
+        self.symbol_entries: List[Dict[str, Any]] = []
+        self.filtered_symbol_entries: List[Dict[str, Any]] = []
         self.current_symbol: Optional[str] = None
         self.current_symbol_name: str = ""
         self.current_table: Optional[str] = None
@@ -76,6 +110,12 @@ class KLineController(QtCore.QObject):
         self._symbol_loader: Optional[QtCore.QObject] = None
         self._candle_load_thread: Optional[QtCore.QThread] = None
         self._candle_loader: Optional[QtCore.QObject] = None
+        self._filter_thread: Optional[QtCore.QThread] = None
+        self._filter_worker: Optional[SymbolFilterWorker] = None
+        self._filter_request_counter = 0
+        self._latest_filter_result_id = 0
+        self._filter_request_meta: Dict[int, Dict[str, Any]] = {}
+        self.destroyed.connect(self._cleanup_filter_worker)
 
         self.symbol_combo.currentIndexChanged.connect(self._on_symbol_index_changed)
         self.symbol_search.textChanged.connect(self._on_search_text_changed)
@@ -168,7 +208,7 @@ class KLineController(QtCore.QObject):
                 rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
                 for (table_name,) in rows:
                     table = str(table_name)
-                    entry: Dict[str, str] = {
+                    entry: Dict[str, Any] = {
                         "table": table,
                         "symbol": table.upper(),
                         "name": "",
@@ -264,7 +304,7 @@ class KLineController(QtCore.QObject):
         self.loading_progress.setVisible(False)
         self.status_bar.showMessage("标的列表加载失败")
 
-    def _on_symbol_load_finished(self, entries: List[Dict[str, str]], select: Optional[str]) -> None:
+    def _on_symbol_load_finished(self, entries: List[Dict[str, Any]], select: Optional[str]) -> None:
         if self._symbol_load_thread:
             try:
                 self._symbol_load_thread.quit()
@@ -292,7 +332,7 @@ class KLineController(QtCore.QObject):
             if table_to_load:
                 self._start_candle_load_worker(table_to_load, chosen)
 
-    def _on_candle_load_finished(self, data: object, chosen: Dict[str, str]) -> None:
+    def _on_candle_load_finished(self, data: object, chosen: Dict[str, Any]) -> None:
         if self._candle_load_thread:
             try:
                 self._candle_load_thread.quit()
@@ -365,7 +405,7 @@ class KLineController(QtCore.QObject):
     def _status_message(self, message: str) -> None:
         self.status_bar.showMessage(message)
 
-    def _start_candle_load_worker(self, table_name: str, chosen: Dict[str, str]) -> None:
+    def _start_candle_load_worker(self, table_name: str, chosen: Dict[str, Any]) -> None:
         self._candle_load_thread = QtCore.QThread(self)
         self._candle_loader = CandleLoadWorker(self.db_path, table_name)
         self._candle_loader.moveToThread(self._candle_load_thread)
@@ -374,14 +414,86 @@ class KLineController(QtCore.QObject):
         self._candle_loader.failed.connect(lambda e: self._log(f"加载 K 线失败: {e}"))
         self._candle_load_thread.start()
 
-    def _apply_symbol_filter(self, *, select: Optional[str] = None, maintain_selection: bool) -> None:
-        query = self.symbol_search.text().strip().lower()
-        self.filtered_symbol_entries = []
-        for entry in self.symbol_entries:
+    def _ensure_filter_worker(self) -> None:
+        if self._filter_worker is not None and self._filter_thread is not None:
+            return
+        thread = QtCore.QThread(self)
+        worker = SymbolFilterWorker()
+        worker.moveToThread(thread)
+        worker.result_ready.connect(self._on_filter_result)
+        worker.error.connect(self._on_filter_error)
+        self.filter_requested.connect(worker.apply_filter)
+        thread.start()
+        self._filter_thread = thread
+        self._filter_worker = worker
+
+    def _cleanup_filter_worker(self, _obj: Optional[QtCore.QObject] = None) -> None:
+        worker = self._filter_worker
+        thread = self._filter_thread
+        if worker:
+            try:
+                self.filter_requested.disconnect(worker.apply_filter)
+            except Exception:
+                pass
+            try:
+                worker.result_ready.disconnect(self._on_filter_result)
+            except Exception:
+                pass
+            try:
+                worker.error.disconnect(self._on_filter_error)
+            except Exception:
+                pass
+            worker.deleteLater()
+        if thread:
+            thread.quit()
+            thread.wait(2000)
+            thread.deleteLater()
+        self._filter_worker = None
+        self._filter_thread = None
+
+    def _on_filter_result(self, request_id: int, filtered_entries: object, query: str) -> None:
+        meta = self._filter_request_meta.pop(request_id, None)
+        if request_id < self._latest_filter_result_id:
+            return
+        self._latest_filter_result_id = request_id
+        select = meta.get("select") if meta else None
+        maintain = meta.get("maintain") if meta else False
+        query_text = meta.get("query", query) if meta else query
+        dataset = list(filtered_entries or [])
+        self._update_filter_ui(dataset, select=select, maintain_selection=maintain, query=query_text)
+
+    def _on_filter_error(self, request_id: int, message: str) -> None:
+        meta = self._filter_request_meta.pop(request_id, None)
+        self._log(f"过滤任务失败: {message}")
+        if request_id < self._latest_filter_result_id:
+            return
+        dataset = self._filter_entries_local(self.symbol_entries, meta.get("query", "") if meta else "")
+        select = meta.get("select") if meta else None
+        maintain = meta.get("maintain") if meta else False
+        self._latest_filter_result_id = request_id
+        self._update_filter_ui(dataset, select=select, maintain_selection=maintain, query=meta.get("query", "") if meta else "")
+
+    def _filter_entries_local(self, entries: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+        query_lower = (query or "").strip().lower()
+        if not query_lower:
+            return list(entries)
+        filtered: List[Dict[str, Any]] = []
+        for entry in entries:
             haystacks = [entry.get("symbol", ""), entry.get("name", ""), entry.get("table", "")]
-            haystacks = [text.lower() for text in haystacks if text]
-            if not query or any(query in text for text in haystacks):
-                self.filtered_symbol_entries.append(entry)
+            haystacks = [str(value).lower() for value in haystacks if value]
+            if any(query_lower in text for text in haystacks):
+                filtered.append(entry)
+        return filtered
+
+    def _update_filter_ui(
+        self,
+        filtered_entries: List[Dict[str, Any]],
+        *,
+        select: Optional[str],
+        maintain_selection: bool,
+        query: str,
+    ) -> None:
+        self.filtered_symbol_entries = list(filtered_entries)
         self._log(
             f"过滤结果: query='{query}', 原始={len(self.symbol_entries)}, 保留={len(self.filtered_symbol_entries)}"
         )
@@ -397,11 +509,13 @@ class KLineController(QtCore.QObject):
                 self.current_symbol_name = ""
                 self.current_markers = []
             self.symbol_combo.blockSignals(False)
+            self.symbols_updated.emit([])
             return
 
         self.symbol_combo.setEnabled(True)
         for entry in self.filtered_symbol_entries:
-            self.symbol_combo.addItem(entry["display"])
+            label = entry.get("display") or entry.get("symbol") or entry.get("table") or ""
+            self.symbol_combo.addItem(label)
             idx = self.symbol_combo.count() - 1
             self.symbol_combo.setItemData(idx, entry)
 
@@ -419,6 +533,23 @@ class KLineController(QtCore.QObject):
         selected_entry = self.filtered_symbol_entries[target_index]
         if previous_table != selected_entry.get("table") or not maintain_selection:
             self._on_symbol_index_changed(target_index)
+        self.symbols_updated.emit(list(self.filtered_symbol_entries))
+
+    def _apply_symbol_filter(self, *, select: Optional[str] = None, maintain_selection: bool) -> None:
+        query = self.symbol_search.text().strip().lower()
+        entries_snapshot = list(self.symbol_entries)
+        if not entries_snapshot:
+            self._update_filter_ui([], select=select, maintain_selection=maintain_selection, query=query)
+            return
+        self._ensure_filter_worker()
+        self._filter_request_counter += 1
+        request_id = self._filter_request_counter
+        self._filter_request_meta[request_id] = {
+            "select": select,
+            "maintain": maintain_selection,
+            "query": query,
+        }
+        self.filter_requested.emit(request_id, entries_snapshot, query)
 
     def _reset_combo(self, placeholder: str) -> None:
         self.symbol_combo.blockSignals(True)
@@ -426,8 +557,9 @@ class KLineController(QtCore.QObject):
         self.symbol_combo.addItem(placeholder, None)
         self.symbol_combo.setEnabled(False)
         self.symbol_combo.blockSignals(False)
+        self.symbols_updated.emit([])
 
-    def _select_in_list(self, target: str, entries: List[Dict[str, str]]) -> bool:
+    def _select_in_list(self, target: str, entries: List[Dict[str, Any]]) -> bool:
         for idx, entry in enumerate(entries):
             if entry.get("table") == target or entry.get("symbol") == target:
                 self.symbol_combo.setCurrentIndex(idx)
@@ -440,7 +572,7 @@ class KLineController(QtCore.QObject):
                 self.symbol_combo.setCurrentIndex(idx)
                 break
 
-    def _find_entry(self, table_or_symbol: Optional[str]) -> Optional[Dict[str, str]]:
+    def _find_entry(self, table_or_symbol: Optional[str]) -> Optional[Dict[str, Any]]:
         if not table_or_symbol:
             return None
         for entry in self.symbol_entries:
@@ -484,14 +616,14 @@ class KLineController(QtCore.QObject):
         base_url = QtCore.QUrl.fromLocalFile(str(TEMPLATE_PATH))
         self.web_view.setHtml(html, base_url)
 
-    def _save_symbols_cache(self, entries: List[Dict[str, str]]) -> None:
+    def _save_symbols_cache(self, entries: List[Dict[str, Any]]) -> None:
         try:
             cache_file = Path(str(self.db_path) + ".symbols.json")
             cache_file.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass
 
-    def _read_symbols_cache(self) -> Optional[List[Dict[str, str]]]:
+    def _read_symbols_cache(self) -> Optional[List[Dict[str, Any]]]:
         cache_file = Path(str(self.db_path) + ".symbols.json")
         if not cache_file.exists():
             return None
@@ -499,6 +631,15 @@ class KLineController(QtCore.QObject):
             raw = cache_file.read_text(encoding="utf-8")
             cached = json.loads(raw)
             if isinstance(cached, list):
+                if not all(isinstance(entry, dict) for entry in cached):
+                    return None
+                requires_refresh = any(
+                    "last_price" not in entry or "change_percent" not in entry
+                    for entry in cached
+                )
+                if requires_refresh:
+                    self._log("缓存缺少最新行情字段，将重新加载数据库。")
+                    return None
                 self._log(f"从缓存加载了 {len(cached)} 条标的记录")
                 return cached  # type: ignore[return-value]
         except Exception as exc:

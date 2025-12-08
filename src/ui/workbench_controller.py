@@ -91,6 +91,7 @@ class StrategyWorkbenchController(QtCore.QObject):
         self.workbench_dock: Optional[QtWidgets.QDockWidget] = None
         self.toggle_action: Optional[QtWidgets.QAction] = None
         self._echarts_dialog: Optional[EChartsPreviewDialog] = None
+        self._symbol_listener_attached = False
 
     def bind_toggle_action(self, action: QtWidgets.QAction) -> None:
         self.toggle_action = action
@@ -100,45 +101,27 @@ class StrategyWorkbenchController(QtCore.QObject):
     def initialize(self) -> None:
         if self.workbench_dock is not None:
             return
-        if StrategyWorkbenchPanel is None or global_strategy_registry is None:
+        if not self._ensure_registry():
             return
-        try:
-            self.strategy_registry = global_strategy_registry()
-        except Exception as exc:  # pragma: no cover - diagnostics only
-            self._log(f"初始化策略注册中心失败: {exc}")
-            self.strategy_registry = None
-            return
-
-        self._register_builtin_strategies()
-        if not self.strategy_registry:
-            return
-
-        panel = StrategyWorkbenchPanel(
-            registry=self.strategy_registry,
-            universe_provider=self.kline_controller.current_universe,
-            selected_symbol_provider=lambda: self.kline_controller.current_table,
-            db_path_provider=self._db_path_getter,
-            preview_handler=self._run_workbench_preview,
-            chart_focus_handler=self.kline_controller.focus_chart,
-            load_symbol_handler=self.kline_controller.select_symbol,
-            parent=self.parent_window,
-        )
         dock = QtWidgets.QDockWidget("策略工作台", self.parent_window)
         dock.setObjectName("strategy_workbench_dock")
+        panel = self._create_panel(dock)
+        if panel is None:
+            dock.deleteLater()
+            return
         dock.setWidget(panel)
         dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
-        dock.setMinimumWidth(480)
-        dock.setMaximumWidth(max(720, self.parent_window.width() // 2))
+        dock.setMinimumWidth(560)
+        dock.setMaximumWidth(max(960, int(self.parent_window.width() * 0.7)))
         dock.setFeatures(dock.features() | QtWidgets.QDockWidget.DockWidgetFloatable)
         self.parent_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         try:
-            target_width = max(480, self.parent_window.width() // 3)
+            target_width = max(700, int(self.parent_window.width() * 0.5))
             self.parent_window.resizeDocks([dock], [target_width], QtCore.Qt.Horizontal)
         except Exception:
-            dock.resize(max(520, dock.width()), dock.height())
+            dock.resize(max(720, dock.width()), dock.height())
         dock.visibilityChanged.connect(self._on_visibility_changed)
 
-        self.workbench_panel = panel
         self.workbench_dock = dock
 
         if self.toggle_action:
@@ -147,9 +130,8 @@ class StrategyWorkbenchController(QtCore.QObject):
             self.toggle_action.setChecked(True)
             self.toggle_action.blockSignals(False)
 
-        if self.kline_controller:
-            self.kline_controller.symbol_changed.connect(self._on_symbol_changed)
-            panel.update_selected_symbol(self.kline_controller.current_symbol or self.kline_controller.current_table)
+        self._attach_symbol_listener()
+        self._update_panel_selection()
 
     def toggle_visibility(self, checked: bool) -> None:
         if checked and self.workbench_dock is None:
@@ -162,6 +144,61 @@ class StrategyWorkbenchController(QtCore.QObject):
             self.toggle_action.blockSignals(True)
             self.toggle_action.setChecked(False)
             self.toggle_action.blockSignals(False)
+
+    def create_embedded_panel(self, parent: QtWidgets.QWidget) -> Optional[StrategyWorkbenchPanel]:
+        if not self._ensure_registry():
+            return None
+        panel = self._create_panel(parent)
+        if panel is None:
+            return None
+        self._attach_symbol_listener()
+        self._update_panel_selection()
+        return panel
+
+    def _ensure_registry(self) -> bool:
+        if self.strategy_registry is not None:
+            return True
+        if StrategyWorkbenchPanel is None or global_strategy_registry is None:
+            return False
+        try:
+            self.strategy_registry = global_strategy_registry()
+        except Exception as exc:  # pragma: no cover - diagnostics only
+            self._log(f"初始化策略注册中心失败: {exc}")
+            self.strategy_registry = None
+            return False
+        self._register_builtin_strategies()
+        return self.strategy_registry is not None
+
+    def _create_panel(self, parent: QtWidgets.QWidget) -> Optional[StrategyWorkbenchPanel]:
+        if not self.strategy_registry:
+            return None
+        if self.workbench_panel is None:
+            self.workbench_panel = StrategyWorkbenchPanel(
+                registry=self.strategy_registry,
+                universe_provider=self.kline_controller.current_universe,
+                selected_symbol_provider=lambda: self.kline_controller.current_table,
+                db_path_provider=self._db_path_getter,
+                preview_handler=self._run_workbench_preview,
+                chart_focus_handler=self.kline_controller.focus_chart,
+                load_symbol_handler=self.kline_controller.select_symbol,
+                parent=parent,
+            )
+        else:
+            self.workbench_panel.setParent(parent)
+        return self.workbench_panel
+
+    def _attach_symbol_listener(self) -> None:
+        if self._symbol_listener_attached or not self.kline_controller:
+            return
+        self.kline_controller.symbol_changed.connect(self._on_symbol_changed)
+        self._symbol_listener_attached = True
+
+    def _update_panel_selection(self) -> None:
+        if not (self.workbench_panel and self.kline_controller):
+            return
+        current = self.kline_controller.current_symbol or self.kline_controller.current_table
+        if current:
+            self.workbench_panel.update_selected_symbol(current)
 
     def _on_visibility_changed(self, visible: bool) -> None:
         if self.toggle_action:

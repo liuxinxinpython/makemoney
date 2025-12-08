@@ -25,7 +25,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     HAS_AKSHARE = False
 
-try:
+try: 
     from src.data.import_excel_to_sqlite import import_directory
     HAS_IMPORTER = True
 except Exception:  # pragma: no cover - optional dependency
@@ -70,6 +70,19 @@ try:
 except Exception:
     load_candles_from_sqlite = None
 
+_THEME_IMPORT_ERROR: Optional[str] = None
+
+try:
+    from src.ui.theme import apply_app_theme  # type: ignore[import-not-found]
+except Exception as exc:
+    _THEME_IMPORT_ERROR = repr(exc)
+
+    def apply_app_theme(app: QtWidgets.QApplication, *, source: Optional[str] = None) -> None:  # type: ignore[unused-argument]
+        """Fallback no-op when theme module is unavailable."""
+        origin = source or "unknown"
+        print(f"[UI] Theme module import failed (source={origin}): {_THEME_IMPORT_ERROR}")
+        return
+
 
 class DebuggableWebEnginePage(QWebEnginePage):
     consoleMessage = QtCore.pyqtSignal(str)
@@ -104,6 +117,8 @@ def main() -> None:
     import sys
 
     app = QtWidgets.QApplication(sys.argv)
+    apply_app_theme(app, source="main.py")
+    app.setProperty("snow_theme_applied", True)
     window = MainWindow(db_path=DEFAULT_DB_PATH)
     window.show()
     sys.exit(app.exec_())

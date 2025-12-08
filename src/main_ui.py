@@ -2,10 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from PyQt5 import QtCore, QtWidgets  # type: ignore[import-not-found]
+from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore[import-not-found]
 from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineView  # type: ignore[import-not-found]
+
+from .ui.controllers import ImportController, LogConsole, StrategyPanelController, SymbolListManager
+from .ui.data import load_sample_symbols
+from .ui.pages import SnowDataPage, SnowQuotesPage
+from .ui.widgets.left_nav import SnowLeftNav
+from .ui.widgets.top_header import SnowTopHeader
+
+try:
+    from .ui.theme import apply_app_theme  # type: ignore[import-not-found]
+except Exception as exc:
+    print(f"[UI] Failed to import theme inside main_ui: {exc}")
+    apply_app_theme = None
 
 try:
     from .data.volume_price_selector import (
@@ -44,6 +56,13 @@ except Exception:
     KLineController = None
     StrategyWorkbenchController = None
 
+if TYPE_CHECKING:  # pragma: no cover
+    from .ui import KLineController as KLineControllerType
+    from .ui import StrategyWorkbenchController as StrategyWorkbenchControllerType
+else:  # Fallback to object for runtime annotation safety
+    KLineControllerType = object
+    StrategyWorkbenchControllerType = object
+
 try:
     from .rendering import render_echarts_demo, ECHARTS_TEMPLATE_PATH  # type: ignore[import-not-found]
 except Exception:
@@ -69,30 +88,30 @@ class DebuggableWebEnginePage(QWebEnginePage):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, db_path: Optional[Path] = None) -> None:
         super().__init__()
+        app = QtWidgets.QApplication.instance()
+        if app and callable(apply_app_theme) and not app.property("snow_theme_applied"):
+            apply_app_theme(app, source="main_ui.py")
+            app.setProperty("snow_theme_applied", True)
         self.setWindowTitle("A股K线与导入工具")
         self.resize(1200, 720)
+        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
 
         # The MainWindow code below is copied from tradingview_kline.py
 
         self.data_dir: Optional[Path] = None
         self.db_path: Path = db_path or Path("a_share_daily.db")
-        self.import_thread: Optional[QtCore.QThread] = None
-        self.import_worker: Optional[QtCore.QObject] = None
+        self.import_controller: Optional[ImportController] = None
 
         self.web_page = DebuggableWebEnginePage(self)
         self.web_page.consoleMessage.connect(self._on_js_console_message)
         self.web_view = QWebEngineView(self)
         self.web_view.setPage(self.web_page)
-        container = QtWidgets.QWidget(self)
-        layout = QtWidgets.QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # 添加顶部进度条
+
+        # 顶部进度条在新的雪盈布局里嵌入主内容区域
         self.loading_progress = QtWidgets.QProgressBar(self)
         self.loading_progress.setVisible(False)
         self.loading_progress.setRange(0, 0)  # 不确定进度模式
-        self.loading_progress.setFixedHeight(3)  # 更细的进度条
+        self.loading_progress.setFixedHeight(3)
         self.loading_progress.setStyleSheet("""
             QProgressBar {
                 border: none;
@@ -106,24 +125,54 @@ class MainWindow(QtWidgets.QMainWindow):
                 border-radius: 1px;
             }
         """)
-        layout.addWidget(self.loading_progress)
-        
-        layout.addWidget(self.web_view)
-        self.setCentralWidget(container)
 
         self.symbol_combo = QtWidgets.QComboBox(self)
         self.symbol_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self.symbol_combo.setVisible(False)
 
         self.symbol_search = QtWidgets.QLineEdit(self)
         self.symbol_search.setPlaceholderText("输入代码或名称搜索")
         self.symbol_search.setClearButtonEnabled(True)
 
-        self.log_dialog: Optional[QtWidgets.QDialog] = None
-        self.log_text: Optional[QtWidgets.QTextEdit] = None
-        self.log_history: List[str] = []
-        self.kline_controller: Optional[KLineController] = None
-        self.workbench_controller: Optional[StrategyWorkbenchController] = None
         self.strategy_button: Optional[QtWidgets.QToolButton] = None
+
+        self.left_nav: Optional[SnowLeftNav] = None
+        self.stock_panel: Optional[QtWidgets.QWidget] = None
+        self.symbol_tabs: Optional[QtWidgets.QTabBar] = None
+        self.all_symbol_list: Optional[QtWidgets.QListView] = None
+        self.favorite_symbol_list: Optional[QtWidgets.QListWidget] = None
+        self.symbol_list_manager: Optional[SymbolListManager] = None
+        self.pages: Optional[QtWidgets.QStackedWidget] = None
+        self.quotes_view: Optional[SnowQuotesPage] = None
+        self.data_view: Optional[SnowDataPage] = None
+        self.quotes_page: Optional[QtWidgets.QWidget] = None
+        self.data_page: Optional[QtWidgets.QWidget] = None
+        self.data_dir_value_label: Optional[QtWidgets.QLabel] = None
+        self.data_db_value_label: Optional[QtWidgets.QLabel] = None
+        self.import_status_label: Optional[QtWidgets.QLabel] = None
+        self.data_page_progress: Optional[QtWidgets.QProgressBar] = None
+        self.strategy_sidebar: Optional[QtWidgets.QWidget] = None
+        self.strategy_panel_container: Optional[QtWidgets.QWidget] = None
+        self.strategy_panel_layout: Optional[QtWidgets.QVBoxLayout] = None
+        self.strategy_placeholder_label: Optional[QtWidgets.QLabel] = None
+        self.strategy_panel_widget: Optional[QtWidgets.QWidget] = None
+        self.strategy_panel_controller: Optional[StrategyPanelController] = None
+        self.sample_symbol_entries: List[Dict[str, Any]] = load_sample_symbols()
+        self.window_min_button: Optional[QtWidgets.QToolButton] = None
+        self.window_max_button: Optional[QtWidgets.QToolButton] = None
+        self.window_close_button: Optional[QtWidgets.QToolButton] = None
+        self.top_header: Optional[QtWidgets.QWidget] = None
+        self.header_drag_area: Optional[QtWidgets.QWidget] = None
+        self._window_drag_offset: Optional[QtCore.QPoint] = None
+
+        self._create_actions()
+        self._build_main_layout()
+        self.menuBar().setVisible(False)
+
+        self.strategy_panel_controller = StrategyPanelController(host=self)
+        self.log_console = LogConsole(parent=self)
+        self.kline_controller: Optional[KLineControllerType] = None
+        self.workbench_controller: Optional[StrategyWorkbenchControllerType] = None
         self.echarts_dialog: Optional[QtWidgets.QDialog] = None
 
         # Initialize display manager
@@ -138,9 +187,6 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-        self._create_actions()
-        self._create_menus()
-        self._create_toolbar()
         self._init_kline_controller()
         self._init_workbench_controller()
 
@@ -150,6 +196,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.import_progress.setVisible(False)
         self.import_progress.setFixedWidth(150)
         self.statusBar().addPermanentWidget(self.import_progress)
+        self.import_controller = ImportController(
+            parent=self,
+            data_dir_getter=lambda: self.data_dir,
+            db_path_getter=lambda: self.db_path,
+            import_worker_cls=ImportWorker,
+            log_handler=self.append_log,
+            log_reset=self.log_console.reset,
+            ensure_log_dialog=self.show_log_console,
+            status_setter=self._set_import_status,
+            status_bar=self.statusBar(),
+            import_progress=self.import_progress,
+            data_progress_getter=lambda: self.data_page_progress,
+            refresh_symbols_async=self.refresh_symbols_async,
+            action_choose_dir=self.action_choose_dir,
+            action_import_append=self.action_import_append,
+            action_import_replace=self.action_import_replace,
+        )
         if self.kline_controller:
             self.kline_controller.load_initial_chart()
 
@@ -161,10 +224,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.action_choose_db = QtWidgets.QAction("选择数据库文件...", self)
         self.action_choose_db.triggered.connect(self.choose_database_file)
 
-        # 保留原有的单次导入操作作为通用入口(由参数决定追加或重建)
-        self.action_import = QtWidgets.QAction("导入到 SQLite", self)
-        self.action_import.triggered.connect(self.start_import)
-        self.action_import.setEnabled(False)
+        self.action_import_append = QtWidgets.QAction("导入(追加)", self)
+        self.action_import_append.triggered.connect(lambda: self.start_import(False))
+        self.action_import_append.setEnabled(False)
+
+        self.action_import_replace = QtWidgets.QAction("导入(重建)", self)
+        self.action_import_replace.triggered.connect(lambda: self.start_import(True))
+        self.action_import_replace.setEnabled(False)
 
         self.action_refresh_symbols = QtWidgets.QAction("刷新标的列表", self)
         self.action_refresh_symbols.triggered.connect(self.refresh_symbols)
@@ -172,84 +238,191 @@ class MainWindow(QtWidgets.QMainWindow):
         self.action_show_echarts_demo = QtWidgets.QAction("ECharts 演示", self)
         self.action_show_echarts_demo.triggered.connect(self._show_echarts_demo)
 
-        # 设置图标和工具提示,提升可用性
         style = QtWidgets.QApplication.style()
         try:
             self.action_choose_dir.setIcon(style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
             self.action_choose_db.setIcon(style.standardIcon(QtWidgets.QStyle.SP_DialogSaveButton))
-            self.action_import.setIcon(style.standardIcon(QtWidgets.QStyle.SP_BrowserReload))
+            self.action_import_append.setIcon(style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
+            self.action_import_replace.setIcon(style.standardIcon(QtWidgets.QStyle.SP_TrashIcon))
             self.action_refresh_symbols.setIcon(style.standardIcon(QtWidgets.QStyle.SP_BrowserReload))
         except Exception:
             pass
+
         self.action_choose_dir.setToolTip("选择本地数据目录(Excel/CSV)并导入至数据库")
         self.action_choose_db.setToolTip("选择或创建 SQLite 数据库文件用于保存行情 K 线")
-        self.action_import.setToolTip("导入本地数据到 SQLite(默认追加,可在导入菜单中选择重建)")
-        self.action_refresh_symbols.setToolTip("刷新数据库中的标的列表")
-
-    def _create_menus(self) -> None:
-        menu_data = self.menuBar().addMenu("数据")
-        menu_data.addAction(self.action_choose_dir)
-        menu_data.addAction(self.action_choose_db)
-        menu_data.addSeparator()
-        # 导入子菜单,提供"追加导入 / 重建导入"选项
-        self.import_menu = QtWidgets.QMenu("导入", self)
-        self.action_import_append = QtWidgets.QAction("导入(追加)", self)
-        self.action_import_append.triggered.connect(lambda: self.start_import(False))
-        self.action_import_replace = QtWidgets.QAction("导入(重建)", self)
-        self.action_import_replace.triggered.connect(lambda: self.start_import(True))
         self.action_import_append.setToolTip("将新数据追加到现有数据表中(非破坏性)")
         self.action_import_replace.setToolTip("删除并重建目标数据表,以新数据覆盖现有记录")
+        self.action_refresh_symbols.setToolTip("刷新数据库中的标的列表")
+
+    def _build_main_layout(self) -> None:
+        container = QtWidgets.QWidget(self)
+        outer = QtWidgets.QHBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        nav_items = {
+            "行情": self.switch_to_quotes,
+            "数据": self.switch_to_data,
+            "策略": self._focus_strategy_sidebar,
+        }
+        self.left_nav = SnowLeftNav(parent=container, nav_items=nav_items)
+        outer.addWidget(self.left_nav)
+
+        content_container = QtWidgets.QWidget(container)
+        content_layout = QtWidgets.QVBoxLayout(content_container)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        self.symbol_search.setPlaceholderText("代码/名称/拼音")
+        self.symbol_search.setFixedHeight(32)
+        self.symbol_search.setMinimumWidth(320)
+        self.top_header = SnowTopHeader(
+            parent=content_container,
+            search_widget=self.symbol_search,
+            on_strategy_clicked=self._focus_strategy_sidebar,
+            on_minimize=self.showMinimized,
+            on_maximize_toggle=self._toggle_max_restore,
+            on_close=self.close,
+        )
+        self.header_drag_area = self.top_header.drag_area
+        if self.header_drag_area:
+            self.header_drag_area.installEventFilter(self)
+        self.strategy_button = None
+        self.window_min_button = self.top_header.min_button
+        self.window_max_button = self.top_header.max_button
+        self.window_close_button = self.top_header.close_button
+        content_layout.addWidget(self.top_header)
+
+        self.pages = QtWidgets.QStackedWidget(content_container)
+        self.quotes_view = SnowQuotesPage(host=self, parent=self.pages)
+        self.quotes_page = self.quotes_view
+        self._init_symbol_list_manager()
+        self.data_view = SnowDataPage(host=self, parent=self.pages)
+        self.data_page = self.data_view
+        if self.quotes_page:
+            self.pages.addWidget(self.quotes_page)
+        if self.data_page:
+            self.pages.addWidget(self.data_page)
+        content_layout.addWidget(self.pages, 1)
+
+        outer.addWidget(content_container, 1)
+
+        self.setCentralWidget(container)
+        self._refresh_data_page_labels()
+        self._set_import_status("待命")
+        self.switch_to_quotes()
+        self._update_window_controls()
+        self._set_symbol_panel_visible(False)
+
+    def _init_symbol_list_manager(self) -> None:
+        if self.all_symbol_list is None:
+            return
+        self.symbol_list_manager = SymbolListManager(
+            list_view=self.all_symbol_list,
+            select_symbol=self._select_symbol_from_manager,
+            current_table_getter=self._current_symbol_table,
+            log_handler=self.append_log,
+            sample_entries=self.sample_symbol_entries,
+        )
+
+    def switch_to_quotes(self) -> None:
+        if self.pages and self.quotes_page:
+            self.pages.setCurrentWidget(self.quotes_page)
+        if self.left_nav:
+            self.left_nav.set_active("行情")
+        self._collapse_strategy_sidebar()
+
+    def switch_to_data(self) -> None:
+        if self.pages and self.data_page:
+            self.pages.setCurrentWidget(self.data_page)
+        if self.left_nav:
+            self.left_nav.set_active("数据")
+        self._collapse_strategy_sidebar()
+
+    def _focus_strategy_sidebar(self) -> None:
+        if self.strategy_panel_controller:
+            self.strategy_panel_controller.focus_sidebar()
+
+    def _collapse_strategy_sidebar(self) -> None:
+        sidebar = self.strategy_sidebar
+        splitter = self.body_splitter
+        if not sidebar or not splitter:
+            return
+        sidebar.setVisible(False)
+        left_width = self.stock_panel.width() if self.stock_panel else 280
+        total_width = splitter.width() or sum(splitter.sizes()) or (left_width + 800)
+        center_width = max(total_width - left_width, 600)
+        splitter.setSizes([left_width, center_width, 0])
+
+    def _format_path(self, path_value: Optional[Path]) -> str:
+        if isinstance(path_value, Path):
+            try:
+                return str(path_value.resolve())
+            except Exception:
+                return str(path_value)
+        return "未选择"
+
+    def _refresh_data_page_labels(self) -> None:
+        if self.data_dir_value_label is not None:
+            self.data_dir_value_label.setText(self._format_path(self.data_dir))
+        if self.data_db_value_label is not None:
+            self.data_db_value_label.setText(self._format_path(self.db_path))
+
+    def _set_import_status(self, text: str) -> None:
+        if self.import_status_label is not None:
+            self.import_status_label.setText(text)
+
+    def _set_symbol_panel_visible(self, visible: bool) -> None:
+        if self.stock_panel:
+            self.stock_panel.setVisible(visible)
+
+    def _toggle_max_restore(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+        self._update_window_controls()
+
+    def _update_window_controls(self) -> None:
+        if not self.window_max_button:
+            return
         try:
-            style2 = QtWidgets.QApplication.style()
-            self.action_import_append.setIcon(style2.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
-            self.action_import_replace.setIcon(style2.standardIcon(QtWidgets.QStyle.SP_TrashIcon))
+            style = QtWidgets.QApplication.style()
+            icon_role = (
+                QtWidgets.QStyle.SP_TitleBarNormalButton if self.isMaximized() else QtWidgets.QStyle.SP_TitleBarMaxButton
+            )
+            self.window_max_button.setIcon(style.standardIcon(icon_role))
         except Exception:
             pass
-        self.import_menu.addAction(self.action_import_append)
-        self.import_menu.addAction(self.action_import_replace)
-        menu_data.addMenu(self.import_menu)
-        menu_data.addAction(self.action_refresh_symbols)
 
-        menu_view = self.menuBar().addMenu("视图")
-        menu_view.addAction(self.action_show_echarts_demo)
+    def changeEvent(self, event: QtCore.QEvent) -> None:  # type: ignore[override]
+        super().changeEvent(event)
+        if event.type() == QtCore.QEvent.WindowStateChange:
+            self._update_window_controls()
 
-    def _create_toolbar(self) -> None:
-        toolbar = self.addToolBar("导入")
-        toolbar.setMovable(False)
-        # 左侧:数据操作
-        toolbar.addAction(self.action_choose_dir)
-        # 使用一个工具按钮承载导入子菜单
-        import_toolbtn = QtWidgets.QToolButton(self)
-        import_toolbtn.setText("导入")
-        import_toolbtn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        import_toolbtn.setMenu(self.import_menu)
-        import_toolbtn.setToolTip("将本地数据导入数据库(可选择追加或重建)")
-        try:
-            import_toolbtn.setIcon(QtWidgets.QApplication.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload))
-        except Exception:
-            pass
-        toolbar.addWidget(import_toolbtn)
-        toolbar.addSeparator()
+    def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._ensure_sample_symbols()
 
-        toolbar.addWidget(QtWidgets.QLabel("当前数据库:", self))
-        self.db_path_label = QtWidgets.QLabel(str(self.db_path.resolve()), self)
-        toolbar.addWidget(self.db_path_label)
-        toolbar.addSeparator()
-
-        toolbar.addWidget(QtWidgets.QLabel("标的:", self))
-        toolbar.addWidget(self.symbol_combo)
-        toolbar.addSeparator()
-        # 移除工具栏上的重建导入复选框,改由导入菜单控制
-        toolbar.addWidget(QtWidgets.QLabel("搜索:", self))
-        self.symbol_search.setMaximumWidth(220)
-        toolbar.addWidget(self.symbol_search)
-        toolbar.addSeparator()
-        self.strategy_button = QtWidgets.QToolButton(self)
-        self.strategy_button.setText("策略选股")
-        self.strategy_button.setToolTip("打开策略工作台")
-        self.strategy_button.clicked.connect(self._show_strategy_workbench)
-        toolbar.addWidget(self.strategy_button)
-        toolbar.addSeparator()
+    def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:  # type: ignore[override]
+        if obj == self.header_drag_area and self.header_drag_area is not None:
+            if event.type() == QtCore.QEvent.MouseButtonPress and isinstance(event, QtGui.QMouseEvent):
+                if event.button() == QtCore.Qt.LeftButton:
+                    self._window_drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+                    return True
+            if event.type() == QtCore.QEvent.MouseMove and isinstance(event, QtGui.QMouseEvent):
+                if event.buttons() & QtCore.Qt.LeftButton and self._window_drag_offset and not self.isMaximized():
+                    self.move(event.globalPos() - self._window_drag_offset)
+                    return True
+            if event.type() == QtCore.QEvent.MouseButtonRelease and isinstance(event, QtGui.QMouseEvent):
+                if event.button() == QtCore.Qt.LeftButton:
+                    self._window_drag_offset = None
+                    return True
+            if event.type() == QtCore.QEvent.MouseButtonDblClick and isinstance(event, QtGui.QMouseEvent):
+                if event.button() == QtCore.Qt.LeftButton:
+                    self._toggle_max_restore()
+                    return True
+        return super().eventFilter(obj, event)
 
     def _init_kline_controller(self) -> None:
         if KLineController is None:
@@ -266,6 +439,9 @@ class MainWindow(QtWidgets.QMainWindow):
             display_manager=self.display_manager,
             parent=self,
         )
+        if self.kline_controller:
+            self.kline_controller.symbols_updated.connect(self._on_symbols_updated)
+            self.kline_controller.symbol_changed.connect(self._on_symbol_changed)
 
     def _init_workbench_controller(self) -> None:
         if StrategyWorkbenchController is None or self.kline_controller is None:
@@ -279,14 +455,42 @@ class MainWindow(QtWidgets.QMainWindow):
             log_handler=self.append_log,
             parent=self,
         )
-        controller.initialize()
         self.workbench_controller = controller
 
-    def _show_strategy_workbench(self) -> None:
-        if self.workbench_controller is None:
-            self._init_workbench_controller()
-        if self.workbench_controller:
-            self.workbench_controller.toggle_visibility(True)
+    def _on_symbols_updated(self, entries: List[Dict[str, Any]]) -> None:
+        if not self.symbol_list_manager:
+            return
+        dataset = entries or self.sample_symbol_entries
+        self.symbol_list_manager.populate(dataset, is_sample=not bool(entries))
+        if entries:
+            self.symbol_list_manager.highlight_current()
+            self._set_symbol_panel_visible(True)
+
+    def _on_symbol_changed(self, table_name: str) -> None:
+        if self.symbol_list_manager:
+            self.symbol_list_manager.highlight_identifier(table_name)
+
+    def _ensure_sample_symbols(self) -> None:
+        if self.symbol_list_manager:
+            self.symbol_list_manager.ensure_sample_symbols()
+
+    def _current_symbol_table(self) -> Optional[str]:
+        if self.kline_controller and getattr(self.kline_controller, "current_table", None):
+            return self.kline_controller.current_table
+        return None
+
+    def _select_symbol_from_manager(self, table_name: str) -> None:
+        if self.kline_controller:
+            self.kline_controller.select_symbol(table_name)
+
+    def focus_chart(self) -> None:
+        if self.kline_controller and hasattr(self.kline_controller, "focus_chart"):
+            self.kline_controller.focus_chart()
+        else:
+            try:
+                self.web_view.setFocus()
+            except Exception:
+                pass
 
     def _show_echarts_demo(self) -> None:
         if render_echarts_demo is None:
@@ -315,56 +519,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.echarts_dialog = dialog
         dialog.exec_()
 
-    def _ensure_log_dialog(self, *, show: bool = False) -> None:
-        if self.log_dialog is None:
-            dialog = QtWidgets.QDialog(self)
-            dialog.setWindowTitle("导入日志")
-            dialog.setModal(False)
-            dialog.resize(520, 360)
-
-            layout = QtWidgets.QVBoxLayout(dialog)
-            text_edit = QtWidgets.QTextEdit(dialog)
-            text_edit.setReadOnly(True)
-            layout.addWidget(text_edit)
-
-            button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close, dialog)
-            button_box.rejected.connect(dialog.reject)
-            layout.addWidget(button_box)
-
-            dialog.finished.connect(self._on_log_dialog_closed)
-
-            self.log_dialog = dialog
-            self.log_text = text_edit
-            if self.log_history:
-                for entry in self.log_history:
-                    text_edit.append(entry)
-        elif self.log_text and not self.log_text.toPlainText() and self.log_history:
-            for entry in self.log_history:
-                self.log_text.append(entry)
-
-        if show and self.log_dialog:
-            self.log_dialog.show()
-            self.log_dialog.raise_()
-            self.log_dialog.activateWindow()
-
-    def _on_log_dialog_closed(self, _result: int) -> None:
-        self.log_dialog = None
-        self.log_text = None
+    def show_log_console(self, *, show: bool = False) -> None:
+        self.log_console.ensure(show=show)
 
     def append_log(self, message: str, *, force_show: bool = False) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         entry = f"[{timestamp}] {message}"
-        self.log_history.append(entry)
-        if len(self.log_history) > 2000:
-            self.log_history = self.log_history[-2000:]
-
-        if force_show:
-            self._ensure_log_dialog(show=True)
-        elif self.log_dialog is not None:
-            self._ensure_log_dialog(show=False)
-
-        if self.log_text:
-            self.log_text.append(entry)
+        self.log_console.append(entry, force_show=force_show)
 
     def _on_js_console_message(self, message: str) -> None:
         self.append_log(f"[JS] {message}")
@@ -377,9 +538,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.data_dir = Path(directory)
         self.append_log(f"已选择数据目录: {self.data_dir}")
         self.statusBar().showMessage(f"数据目录: {self.data_dir}")
-        self.action_import.setEnabled(True)
         self.action_import_append.setEnabled(True)
         self.action_import_replace.setEnabled(True)
+        self._refresh_data_page_labels()
+        self._set_import_status("数据目录已就绪，等待导入")
 
     def choose_database_file(self) -> None:
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -392,100 +554,14 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self.db_path = Path(file_path)
-        display_path = str(self.db_path.resolve())
-        self.db_path_label.setText(display_path)
-        self.db_path_label.setToolTip(display_path)
         self.append_log(f"数据库路径已更新为: {self.db_path}")
+        self._refresh_data_page_labels()
         # Refresh symbols asynchronously to avoid blocking UI when DB is large.
         self.refresh_symbols_async()
 
     def start_import(self, replace: Optional[bool] = None) -> None:
-        if self.data_dir is None:
-            QtWidgets.QMessageBox.warning(self, "缺少目录", "请先选择包含 Excel/CSV 的数据目录。")
-            return
-
-        if self.import_thread is not None:
-            QtWidgets.QMessageBox.information(self, "导入进行中", "导入任务正在执行，请稍候。")
-            return
-
-        self.log_history.clear()
-        if self.log_text:
-            self.log_text.clear()
-        self._ensure_log_dialog(show=True)
-
-        replace_mode = bool(replace) if replace is not None else False
-        if replace_mode:
-            confirm = QtWidgets.QMessageBox.question(
-                self,
-                "确认重建导入",
-                "重建导入会清空数据库中的目标表并用新数据覆盖，是否继续？",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if confirm != QtWidgets.QMessageBox.Yes:
-                self.append_log("用户取消了重建导入。")
-                return
-        self.append_log("准备导入数据...", force_show=True)
-        self.append_log(f"导入模式: {'重建' if replace_mode else '追加'}")
-
-        self.import_worker = ImportWorker(self.data_dir, self.db_path, replace=replace_mode)
-        self.import_thread = QtCore.QThread(self)
-        self.import_worker.moveToThread(self.import_thread)
-
-        self.import_thread.started.connect(self.import_worker.run)
-        self.import_worker.progress.connect(self.append_log)
-        self.import_worker.finished.connect(self.on_import_finished)
-        self.import_worker.failed.connect(self.on_import_failed)
-        self.import_worker.finished.connect(self.import_thread.quit)
-        self.import_worker.failed.connect(self.import_thread.quit)
-        self.import_thread.finished.connect(self.cleanup_import_thread)
-
-        self.action_import.setEnabled(False)
-        self.action_import_append.setEnabled(False)
-        self.action_import_replace.setEnabled(False)
-        self.action_choose_dir.setEnabled(False)
-        self.statusBar().showMessage("正在导入...")
-
-        # 显示进度条（不确定模式，直到完成）
-        self.import_progress.setVisible(True)
-        self.import_progress.setRange(0, 0)
-        self.import_thread.start()
-
-    def cleanup_import_thread(self) -> None:
-        if self.import_worker is not None:
-            self.import_worker.deleteLater()
-            self.import_worker = None
-        if self.import_thread is not None:
-            self.import_thread.deleteLater()
-            self.import_thread = None
-
-        self.action_import.setEnabled(self.data_dir is not None)
-        self.action_import_append.setEnabled(self.data_dir is not None)
-        self.action_import_replace.setEnabled(self.data_dir is not None)
-        self.action_choose_dir.setEnabled(True)
-        # 隐藏进度条
-        try:
-            self.import_progress.setVisible(False)
-        except Exception:
-            pass
-
-    def on_import_finished(self, tables: List[str]) -> None:
-        self.append_log("导入任务完成。")
-        self.statusBar().showMessage("导入完成")
-        try:
-            self.import_progress.setVisible(False)
-        except Exception:
-            pass
-        self.refresh_symbols_async(select=tables[0] if tables else None)
-
-    def on_import_failed(self, error_message: str) -> None:
-        self.append_log(f"导入失败: {error_message}")
-        QtWidgets.QMessageBox.critical(self, "导入失败", error_message)
-        self.statusBar().showMessage("导入失败")
-        try:
-            self.import_progress.setVisible(False)
-        except Exception:
-            pass
+        if self.import_controller:
+            self.import_controller.start_import(replace)
 
     def refresh_symbols(self, select: Optional[str] = None) -> List[str]:
         if self.kline_controller:

@@ -4,12 +4,45 @@
   <meta charset="utf-8" />
   <title>Lightweight Charts PyQt Demo</title>
   <style>
-    html, body { height: 100%; margin: 0; padding: 0; background: #f1f4f9; }
-    #chart { position: relative; display: flex; flex-direction: column; height: 100%; width: 100%; padding: 18px 22px 22px; box-sizing: border-box; background: linear-gradient(180deg, #f6f8fb 0%, #e9eef6 100%); }
-    .panel { position: relative; width: 100%; background: #ffffff; border-radius: 14px; box-shadow: 0 14px 36px rgba(15, 23, 42, 0.12); overflow: hidden; }
-    #main-chart { flex: 1 1 auto; min-height: 320px; }
-    #chart-divider { flex: 0 0 auto; width: 88%; height: 18px; margin: 16px auto; background: linear-gradient(90deg, rgba(99, 121, 181, 0.18) 0%, rgba(161, 176, 211, 0.36) 50%, rgba(99, 121, 181, 0.18) 100%); border-radius: 12px; box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.08); pointer-events: none; }
-    #volume-chart { flex: 0 0 auto; min-height: 200px; }
+    html, body { height: 100%; margin: 0; padding: 0; background: #f4f6fb; }
+    #chart {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0;
+      background: #ffffff;
+      border-left: 1px solid #dfe3ec;
+      border-right: 1px solid #dfe3ec;
+      border-top: 1px solid #dfe3ec;
+      border-bottom: 1px solid #dfe3ec;
+    }
+    .panel {
+      position: relative;
+      width: 100%;
+      background: #ffffff;
+      border-radius: 0;
+      box-shadow: none;
+      overflow: hidden;
+    }
+    #main-chart {
+      flex: 1 1 auto;
+      min-height: 320px;
+      border-bottom: 1px solid #e0e4ee;
+    }
+    #chart-divider {
+      flex: 0 0 12px;
+      background: #f0f2f6;
+      border-top: 1px solid #e0e4ee;
+      border-bottom: 1px solid #e0e4ee;
+    }
+    #volume-chart {
+      flex: 0 0 auto;
+      min-height: 200px;
+      border-bottom: 1px solid #e0e4ee;
+    }
     #tooltip { position: absolute; top: 18px; right: 18px; background: rgba(255, 255, 255, 0.94); border-radius: 8px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15); padding: 10px 14px; font-size: 13px; color: #2d3240; pointer-events: none; line-height: 1.5; display: none; white-space: nowrap; border: 1px solid rgba(120, 132, 168, 0.35); backdrop-filter: blur(4px); z-index: 10; }
     .overlay-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; }
   </style>
