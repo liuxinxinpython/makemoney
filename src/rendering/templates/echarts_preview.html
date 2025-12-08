@@ -53,16 +53,34 @@
 
     const markerPoints = (dataMarkers || []).map(marker => {
       const candle = map.get(String(marker.time)) || {};
-      const baseline = marker.price ?? (marker.position === 'belowBar' ? candle.low : candle.high);
+      const fallback = marker.position === 'belowBar' ? candle.low : candle.high;
+      const baseline = marker.price ?? fallback ?? candle.close ?? 0;
+      const markerColor = marker.color || '#fcd34d';
+      const isBelow = marker.position === 'belowBar';
       return {
         name: marker.text || '',
-        coord: [marker.time, baseline ?? candle.close ?? 0],
+        coord: [marker.time, baseline],
         value: marker.text || '',
-        itemStyle: { color: marker.color || '#fcd34d' },
+        itemStyle: {
+          color: markerColor,
+          borderColor: markerColor,
+          borderWidth: 1.2,
+        },
         symbol: marker.shape === 'arrowDown' ? 'triangle' : marker.shape === 'arrowUp' ? 'triangle' : 'circle',
         symbolRotate: marker.shape === 'arrowDown' ? 180 : 0,
-        symbolSize: marker.size ? Math.max(10, marker.size * 6) : 14,
-        label: { color: '#0b1220', fontSize: 11, backgroundColor: '#e2e8f0', borderRadius: 4, padding: [2, 4] },
+        symbolSize: marker.size ? Math.max(12, marker.size * 5) : 16,
+        symbolOffset: [0, isBelow ? 10 : -10],
+        label: {
+          color: '#f8fafc',
+          fontSize: 11,
+          backgroundColor: 'rgba(15, 23, 42, 0.9)',
+          borderColor: markerColor,
+          borderWidth: 1,
+          borderRadius: 4,
+          padding: [3, 6],
+          position: isBelow ? 'top' : 'bottom',
+          distance: 10,
+        },
       };
     });
 
@@ -172,7 +190,7 @@
             symbolSize: 12,
             symbolKeepAspect: true,
             data: markerPoints,
-            label: { formatter: param => param.value || '', color: '#111827' },
+            label: { formatter: param => param.value || '', fontSize: 11 },
           },
           z: 1,
         },
