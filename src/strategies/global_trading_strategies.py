@@ -8,6 +8,78 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     load_candles_from_sqlite = None
 
+try:
+    from ..research import StrategyContext, StrategyRunResult
+    from ..research.models import StrategyParameter
+except Exception:  # pragma: no cover - optional dependency
+    StrategyContext = None
+    StrategyRunResult = None
+    StrategyParameter = None
+
+from .helpers import serialize_run_result
+
+
+def _build_strategy_parameters() -> Dict[str, List[Any]]:
+    if StrategyParameter is None:
+        return {
+            "ma": [],
+            "rsi": [],
+            "donchian": [],
+        }
+    return {
+        "ma": [
+            StrategyParameter(
+                key="short_window",
+                label="短周期",
+                type="number",
+                default=20,
+                description="较快均线窗口, 常用 5/10/20。",
+            ),
+            StrategyParameter(
+                key="long_window",
+                label="长周期",
+                type="number",
+                default=50,
+                description="较慢均线窗口, 常用 30/50/60。",
+            ),
+        ],
+        "rsi": [
+            StrategyParameter(
+                key="period",
+                label="RSI 周期",
+                type="number",
+                default=14,
+                description="计算 RSI 的回看窗口, 默认为 14。",
+            ),
+            StrategyParameter(
+                key="oversold",
+                label="超卖阈值",
+                type="number",
+                default=30.0,
+                description="RSI 低于该值触发买入。",
+            ),
+            StrategyParameter(
+                key="overbought",
+                label="超买阈值",
+                type="number",
+                default=70.0,
+                description="RSI 高于该值触发卖出。",
+            ),
+        ],
+        "donchian": [
+            StrategyParameter(
+                key="lookback",
+                label="回看周期",
+                type="number",
+                default=20,
+                description="构建唐奇安通道的历史窗口长度。",
+            ),
+        ],
+    }
+
+
+PARAMETERS_BY_STRATEGY = _build_strategy_parameters()
+
 
 def _assert_loader_available() -> None:
     if load_candles_from_sqlite is None:
@@ -299,8 +371,75 @@ class DonchianBreakoutStrategy:
         }
 
 
+def run_ma_workbench(context: "StrategyContext") -> "StrategyRunResult":
+    if StrategyContext is None or StrategyRunResult is None:
+        raise RuntimeError("策略运行环境不可用")
+    params = context.params or {}
+
+    def _get_int(key: str, default: int) -> int:
+        try:
+            return int(float(params.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    short_window = max(3, _get_int("short_window", 20))
+    long_window = max(short_window + 1, _get_int("long_window", 50))
+
+    strategy = MovingAverageCrossoverStrategy(short_window=short_window, long_window=long_window)
+    raw_result = strategy.scan_current_symbol(context.db_path, context.table_name)
+    return serialize_run_result("ma_crossover", raw_result)
+
+
+def run_rsi_workbench(context: "StrategyContext") -> "StrategyRunResult":
+    if StrategyContext is None or StrategyRunResult is None:
+        raise RuntimeError("策略运行环境不可用")
+    params = context.params or {}
+
+    def _get_int(key: str, default: int) -> int:
+        try:
+            return int(float(params.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    def _get_float(key: str, default: float) -> float:
+        try:
+            return float(params.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    period = max(2, _get_int("period", 14))
+    oversold = max(0.0, min(_get_float("oversold", 30.0), 99.0))
+    overbought = max(oversold + 1.0, min(_get_float("overbought", 70.0), 100.0))
+
+    strategy = RSIMeanReversionStrategy(period=period, oversold=oversold, overbought=overbought)
+    raw_result = strategy.scan_current_symbol(context.db_path, context.table_name)
+    return serialize_run_result("rsi_reversion", raw_result)
+
+
+def run_donchian_workbench(context: "StrategyContext") -> "StrategyRunResult":
+    if StrategyContext is None or StrategyRunResult is None:
+        raise RuntimeError("策略运行环境不可用")
+    params = context.params or {}
+
+    def _get_int(key: str, default: int) -> int:
+        try:
+            return int(float(params.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    lookback = max(5, _get_int("lookback", 20))
+
+    strategy = DonchianBreakoutStrategy(lookback=lookback)
+    raw_result = strategy.scan_current_symbol(context.db_path, context.table_name)
+    return serialize_run_result("donchian_breakout", raw_result)
+
+
 __all__ = [
     "MovingAverageCrossoverStrategy",
     "RSIMeanReversionStrategy",
     "DonchianBreakoutStrategy",
+    "PARAMETERS_BY_STRATEGY",
+    "run_ma_workbench",
+    "run_rsi_workbench",
+    "run_donchian_workbench",
 ]

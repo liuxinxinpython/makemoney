@@ -19,6 +19,44 @@ except Exception:  # pragma: no cover - optional import
     DisplayResult = None
     HAS_DISPLAY = False
 
+try:
+    from ..research import StrategyContext, StrategyRunResult
+    from ..research.models import StrategyParameter
+except Exception:  # pragma: no cover - optional import
+    StrategyContext = None
+    StrategyRunResult = None
+    StrategyParameter = None
+
+from .helpers import serialize_run_result
+
+
+if StrategyParameter is not None:
+    CHAN_STRATEGY_PARAMETERS: List[StrategyParameter] = [
+        StrategyParameter(
+            key="swing_window",
+            label="分型窗口",
+            type="number",
+            default=3,
+            description="检测分型时向前向后比较的K线数量",
+        ),
+        StrategyParameter(
+            key="min_move_pct",
+            label="最小笔幅度(%)",
+            type="number",
+            default=3.0,
+            description="小于该幅度的波动不构成有效笔",
+        ),
+        StrategyParameter(
+            key="divergence_pct",
+            label="背驰阈值(%)",
+            type="number",
+            default=5.0,
+            description="一二买卖判断时要求的高低点抬升/下降幅度",
+        ),
+    ]
+else:  # pragma: no cover - optional UI metadata
+    CHAN_STRATEGY_PARAMETERS = []
+
 
 @dataclass
 class Fractal:
@@ -300,4 +338,33 @@ class ChanTheoryStrategy:
         }
 
 
-__all__ = ['ChanTheoryStrategy']
+def run_chan_workbench(context: "StrategyContext") -> "StrategyRunResult":
+    if StrategyContext is None or StrategyRunResult is None:
+        raise RuntimeError('策略运行环境不可用')
+    params = context.params or {}
+
+    def _get_float(key: str, default: float) -> float:
+        try:
+            return float(params.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _get_int(key: str, default: int) -> int:
+        try:
+            return int(float(params.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    swing_window = max(2, _get_int('swing_window', 3))
+    min_move_pct = max(0.0005, _get_float('min_move_pct', 3.0) / 100.0)
+    divergence_pct = max(0.0005, _get_float('divergence_pct', 5.0) / 100.0)
+
+    strategy = ChanTheoryStrategy(
+        swing_window=swing_window,
+        min_move_pct=min_move_pct,
+        divergence_pct=divergence_pct,
+    )
+    raw_result = strategy.scan_current_symbol(context.db_path, context.table_name)
+    return serialize_run_result('chan_theory', raw_result)
+
+__all__ = ['ChanTheoryStrategy', 'CHAN_STRATEGY_PARAMETERS', 'run_chan_workbench']

@@ -18,6 +18,93 @@ except Exception:
     DisplayResult = None
     HAS_DISPLAY = False
 
+try:
+    from ..research import StrategyContext, StrategyRunResult
+    from ..research.models import StrategyParameter
+except Exception:
+    StrategyContext = None
+    StrategyRunResult = None
+    StrategyParameter = None
+
+from .helpers import serialize_run_result
+
+
+if StrategyParameter is not None:
+    ZIGZAG_STRATEGY_PARAMETERS: List[StrategyParameter] = [
+        StrategyParameter(
+            key="min_reversal",
+            label="最小反转(%)",
+            type="number",
+            default=5.0,
+            description="忽略幅度低于该百分比的价格波动",
+        ),
+        StrategyParameter(
+            key="retest_tolerance_pct",
+            label="回踩容差(%)",
+            type="number",
+            default=1.2,
+            description="第二个波谷相对基准波谷允许的最大价格偏差",
+        ),
+        StrategyParameter(
+            key="uptrend_window",
+            label="上涨确认窗口",
+            type="number",
+            default=5,
+            description="回踩后统计斜率所使用的K线数量",
+        ),
+        StrategyParameter(
+            key="min_uptrend_slope_pct",
+            label="上涨斜率阈值(%)",
+            type="number",
+            default=0.15,
+            description="确认买点所需的最小平均斜率 (按单根K线百分比计)",
+        ),
+        StrategyParameter(
+            key="resistance_tolerance_pct",
+            label="压力容差(%)",
+            type="number",
+            default=1.2,
+            description="触及中枢波峰视为遇阻时允许的价格偏差",
+        ),
+        StrategyParameter(
+            key="slowdown_window",
+            label="放缓检测窗口",
+            type="number",
+            default=4,
+            description="判断上行动能放缓所使用的K线数量",
+        ),
+        StrategyParameter(
+            key="slowdown_slope_pct",
+            label="放缓斜率上限(%)",
+            type="number",
+            default=0.04,
+            description="放缓/走平判定允许的最大平均斜率 (按单根K线百分比计)",
+        ),
+        StrategyParameter(
+            key="upper_shadow_ratio_pct",
+            label="长上影比例(%)",
+            type="number",
+            default=55.0,
+            description="长上影线触发卖点时上影长度占整根K线区间的比例",
+        ),
+        StrategyParameter(
+            key="stop_loss_pct",
+            label="回踩止损(%)",
+            type="number",
+            default=5.0,
+            description="跌破基准/回踩波谷后触发止损的幅度",
+        ),
+        StrategyParameter(
+            key="min_progress_pct",
+            label="趋势确认涨幅(%)",
+            type="number",
+            default=3.0,
+            description="认为涨势已经展开所需的最小涨幅 (用于走平卖点)",
+        ),
+    ]
+else:  # pragma: no cover - optional UI metadata
+    ZIGZAG_STRATEGY_PARAMETERS = []
+
 
 class ZigZagAnalyzer:
     """ZigZag波峰波谷检测器"""
@@ -516,3 +603,62 @@ class ZigZagWavePeaksValleysStrategy:
                 "markers": markers,
                 "status_message": status_message,
             }
+
+
+def run_zigzag_workbench(context: "StrategyContext") -> "StrategyRunResult":
+    if StrategyContext is None or StrategyRunResult is None:
+        raise RuntimeError("策略运行环境不可用")
+    params = context.params or {}
+
+    def _get_float(key: str, default: float) -> float:
+        try:
+            return float(params.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _get_int(key: str, default: int) -> int:
+        try:
+            return int(float(params.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    min_pct = _get_float("min_reversal", 5.0)
+    min_reversal = max(0.0005, min_pct / 100.0)
+
+    retest_pct = _get_float("retest_tolerance_pct", 1.2)
+    retest_tolerance = max(0.0, retest_pct / 100.0)
+
+    uptrend_window = max(2, _get_int("uptrend_window", 5))
+    slope_pct = _get_float("min_uptrend_slope_pct", 0.15)
+    min_uptrend_slope = max(0.0, slope_pct / 100.0)
+
+    resistance_pct = _get_float("resistance_tolerance_pct", 1.2)
+    resistance_tolerance = max(0.0, resistance_pct / 100.0)
+
+    slowdown_window = max(2, _get_int("slowdown_window", 4))
+    slowdown_slope_pct = _get_float("slowdown_slope_pct", 0.04)
+    slowdown_slope = max(0.0, slowdown_slope_pct / 100.0)
+
+    upper_shadow_pct = _get_float("upper_shadow_ratio_pct", 55.0)
+    upper_shadow_ratio = min(0.99, max(0.0, upper_shadow_pct / 100.0))
+
+    stop_loss_pct_input = _get_float("stop_loss_pct", 5.0)
+    stop_loss_fraction = max(0.0, stop_loss_pct_input / 100.0)
+
+    min_progress_pct_input = _get_float("min_progress_pct", 3.0)
+    min_progress_fraction = max(0.0, min_progress_pct_input / 100.0)
+
+    strategy = ZigZagWavePeaksValleysStrategy(
+        min_reversal=min_reversal,
+        retest_tolerance=retest_tolerance,
+        uptrend_window=uptrend_window,
+        min_uptrend_slope=min_uptrend_slope,
+        resistance_tolerance=resistance_tolerance,
+        slowdown_window=slowdown_window,
+        slowdown_slope=slowdown_slope,
+        upper_shadow_ratio=upper_shadow_ratio,
+        stop_loss_pct=stop_loss_fraction,
+        min_progress_pct=min_progress_fraction,
+    )
+    raw_result = strategy.scan_current_symbol(context.db_path, context.table_name)
+    return serialize_run_result("zigzag_wave_peaks_valleys", raw_result)

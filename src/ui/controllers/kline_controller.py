@@ -9,13 +9,13 @@ from PyQt5 import QtCore, QtWidgets  # type: ignore[import-not-found]
 from PyQt5.QtWebEngineWidgets import QWebEngineView  # type: ignore[import-not-found]
 
 try:
-    from ..data.workers import CandleLoadWorker, SymbolLoadWorker  # type: ignore[import-not-found]
+    from ...data.workers import CandleLoadWorker, SymbolLoadWorker  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - fallback when optional modules missing
     CandleLoadWorker = None
     SymbolLoadWorker = None
 
 try:
-    from ..rendering import TEMPLATE_PATH, build_mock_candles, load_maotai_candles, render_html  # type: ignore[import-not-found]
+    from ...rendering import TEMPLATE_PATH, build_mock_candles, load_maotai_candles, render_html  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - fallback defaults
     TEMPLATE_PATH = Path(__file__).parent.parent / "rendering" / "templates" / "tradingview_template.html"
     build_mock_candles = None
@@ -23,17 +23,17 @@ except Exception:  # pragma: no cover - fallback defaults
     render_html = None
 
 try:
-    from ..data.data_loader import load_candles_from_sqlite  # type: ignore[import-not-found]
+    from ...data.data_loader import load_candles_from_sqlite  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - optional import
     load_candles_from_sqlite = None
 
 try:
-    from ..displays import DisplayManager  # type: ignore[import-not-found]
+    from ...displays import DisplayManager  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - optional import
     DisplayManager = None
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..displays import DisplayManager as DisplayManagerType
+    from ...displays import DisplayManager as DisplayManagerType
 else:  # pragma: no cover
     DisplayManagerType = Any
 

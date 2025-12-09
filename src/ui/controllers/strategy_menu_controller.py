@@ -8,18 +8,18 @@ from PyQt5 import QtCore, QtWidgets  # type: ignore[import-not-found]
 from .kline_controller import KLineController
 
 try:
-    from ..strategies.zigzag_wave_peaks_valleys import ZigZagWavePeaksValleysStrategy  # type: ignore[import-not-found]
+    from ...strategies.zigzag_wave_peaks_valleys import ZigZagWavePeaksValleysStrategy  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - optional import
     ZigZagWavePeaksValleysStrategy = None
 
 try:
-    from ..rendering import ECHARTS_PREVIEW_TEMPLATE_PATH, render_echarts_preview  # type: ignore[import-not-found]
+    from ...rendering import ECHARTS_PREVIEW_TEMPLATE_PATH, render_echarts_preview  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - optional import
     render_echarts_preview = None
     ECHARTS_PREVIEW_TEMPLATE_PATH = None
 
 try:
-    from .echarts_preview_dialog import EChartsPreviewDialog
+    from ..echarts_preview_dialog import EChartsPreviewDialog
 except Exception:  # pragma: no cover - optional import
     EChartsPreviewDialog = None
 

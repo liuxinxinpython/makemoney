@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore[import-not-found]
 
-from ..research import (
+from ...research import (
     BacktestEngine,
     BacktestRequest,
     BacktestResult,
@@ -17,8 +17,8 @@ from ..research import (
     StrategyRunResult,
     StrategyScanner,
 )
-from ..rendering.render_utils import render_backtest_equity
-from .echarts_preview_dialog import EChartsPreviewDialog
+from ...rendering.render_utils import render_backtest_equity
+from ..echarts_preview_dialog import EChartsPreviewDialog
 
 
 class StrategyWorkbenchPanel(QtWidgets.QWidget):

@@ -1,9 +1,9 @@
 """UI helper widgets and controllers."""
 
-from .kline_controller import KLineController
+from .controllers.kline_controller import KLineController
+from .controllers.strategy_menu_controller import StrategyMenuController
+from .controllers.workbench_controller import StrategyWorkbenchController
 from .panels import StrategyWorkbenchPanel
-from .strategy_menu_controller import StrategyMenuController
-from .workbench_controller import StrategyWorkbenchController
 from .echarts_preview_dialog import EChartsPreviewDialog
 
 __all__ = [
