@@ -177,6 +177,7 @@ class StrategyScanner(QtCore.QObject):
 
                 for future in as_completed(futures):
                     table_name = futures[future]
+                    processed += 1
                     try:
                         result = future.result()
                     except ScanCancelled:
@@ -184,9 +185,9 @@ class StrategyScanner(QtCore.QObject):
                     except Exception as exc:
                         if progress_callback:
                             progress_callback(f"{table_name} 扫描失败: {exc}")
-                        continue
-                    scan_results.append(result)
-                    processed += 1
+                    else:
+                        if result is not None:
+                            scan_results.append(result)
                     if progress_callback:
                         progress_callback(f"扫描 {table_name} ({processed}/{total})")
                     if cancel_callback and cancel_callback():
@@ -203,7 +204,7 @@ class StrategyScanner(QtCore.QObject):
         request: ScanRequest,
         db_path: Path,
         cancel_callback: Optional[Callable[[], bool]],
-    ) -> ScanResult:
+    ) -> Optional[ScanResult]:
         if cancel_callback and cancel_callback():
             raise ScanCancelled()
         context = StrategyContext(
@@ -217,7 +218,13 @@ class StrategyScanner(QtCore.QObject):
             mode="scan",
         )
         run_result = self.registry.run_strategy(request.strategy_key, context)
-        result_payload = self._build_scan_payload(run_result)
+        result_payload = self._build_scan_payload(
+            run_result,
+            start_date=request.start_date,
+            end_date=request.end_date,
+        )
+        if result_payload is None:
+            return None
         return ScanResult(
             strategy_key=request.strategy_key,
             symbol=context.symbol or table_name,
@@ -231,10 +238,21 @@ class StrategyScanner(QtCore.QObject):
             metadata=result_payload["metadata"],
         )
 
-    def _build_scan_payload(self, run_result) -> Dict[str, Any]:
+    def _build_scan_payload(
+        self,
+        run_result,
+        *,
+        start_date,
+        end_date,
+    ) -> Optional[Dict[str, Any]]:
         markers = list(getattr(run_result, "markers", []) or [])
-        candidates = self._collect_candidates(run_result)
-        primary = candidates[0] if candidates else self._fallback_candidate(run_result)
+        candidates = self._collect_candidates(run_result, start_date, end_date)
+        if not candidates and not self._contains_buy_signal(run_result, markers, start_date, end_date):
+            return None
+
+        primary = candidates[0] if candidates else self._fallback_candidate(markers, start_date, end_date)
+        if primary is None:
+            return None
 
         score = float(primary.get("score") or primary.get("confidence") or len(markers))
         entry_date = primary.get("date") or primary.get("time")
@@ -256,29 +274,116 @@ class StrategyScanner(QtCore.QObject):
             "metadata": metadata,
         }
 
-    def _collect_candidates(self, run_result) -> List[Dict[str, Any]]:
+    def _collect_candidates(self, run_result, start_date, end_date) -> List[Dict[str, Any]]:
         extra = getattr(run_result, "extra_data", {}) or {}
         raw = extra.get("scan_candidates")
         if not isinstance(raw, list):
             return []
         candidates: List[Dict[str, Any]] = []
         for row in raw:
-            if isinstance(row, dict):
-                candidates.append(row)
+            if not isinstance(row, dict):
+                continue
+            candidate_date = self._coerce_date(row.get("date") or row.get("time"))
+            if candidate_date and not self._in_date_range(candidate_date, start_date, end_date):
+                continue
+            candidates.append(row)
         candidates.sort(key=lambda item: item.get("score") or item.get("confidence") or 0, reverse=True)
         return candidates
 
-    def _fallback_candidate(self, run_result) -> Dict[str, Any]:
-        markers = list(getattr(run_result, "markers", []) or [])
-        if markers:
-            marker = markers[-1]
-            return {
-                "date": marker.get("time") or marker.get("date"),
-                "price": marker.get("price") or marker.get("close"),
-                "score": len(markers),
-                "note": marker.get("text") or marker.get("label"),
-            }
-        return {"score": 0}
+    def _fallback_candidate(
+        self,
+        markers: List[Dict[str, Any]],
+        start_date,
+        end_date,
+    ) -> Optional[Dict[str, Any]]:
+        if not markers:
+            return None
+        # Pick the latest buy-like marker to avoid误选非买点信号
+        for marker in reversed(markers):
+            text = str(marker.get("text") or marker.get("label") or "").upper()
+            if "BUY" in text or "买" in text:
+                marker_date = self._coerce_date(marker.get("time") or marker.get("date"))
+                if marker_date and not self._in_date_range(marker_date, start_date, end_date):
+                    continue
+                return {
+                    "date": marker.get("time") or marker.get("date"),
+                    "price": marker.get("price") or marker.get("close"),
+                    "score": marker.get("score") or 1,
+                    "note": marker.get("text") or marker.get("label"),
+                }
+        return None
+
+    def _contains_buy_signal(self, run_result, markers: List[Dict[str, Any]], start_date, end_date) -> bool:
+        for marker in markers:
+            text = str(marker.get("text") or marker.get("label") or "").upper()
+            if "BUY" in text or "买" in text:
+                marker_date = self._coerce_date(marker.get("time") or marker.get("date"))
+                if marker_date and not self._in_date_range(marker_date, start_date, end_date):
+                    continue
+                return True
+        extra = getattr(run_result, "extra_data", {}) or {}
+        trades = extra.get("trades") or []
+        if isinstance(trades, list):
+            for trade in trades:
+                if not isinstance(trade, dict):
+                    continue
+                entry_time = trade.get("entry_time") or trade.get("entryTime")
+                trade_date = self._coerce_date(entry_time)
+                if trade_date and not self._in_date_range(trade_date, start_date, end_date):
+                    continue
+                if entry_time or trade.get("entry_price") or trade.get("entryPrice"):
+                    return True
+        candidates = extra.get("scan_candidates")
+        if isinstance(candidates, list):
+            for row in candidates:
+                if not isinstance(row, dict):
+                    continue
+                candidate_date = self._coerce_date(row.get("date") or row.get("time"))
+                if candidate_date and not self._in_date_range(candidate_date, start_date, end_date):
+                    continue
+                return True
+        return False
+
+    def _coerce_date(self, value):
+        """Convert various date representations to date object; return None if unknown."""
+        try:
+            from datetime import datetime, date
+        except Exception:
+            return True
+        if value is None:
+            return None
+        if isinstance(value, date):
+            return value
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(value).date()
+            except Exception:
+                return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return datetime.fromisoformat(text[:19]).date()
+            except Exception:
+                pass
+            try:
+                return datetime.strptime(text[:10], "%Y-%m-%d").date()
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _in_date_range(candidate_date, start_date, end_date) -> bool:
+        if candidate_date is None:
+            return False
+        if start_date and candidate_date < start_date:
+            return False
+        if end_date and candidate_date > end_date:
+            return False
+        return True
 
     @staticmethod
     def _is_number(value: Any) -> bool:

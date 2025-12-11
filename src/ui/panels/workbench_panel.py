@@ -1,7 +1,18 @@
 ﻿from __future__ import annotations
 
+# Allow running as a standalone module (e.g., `python workbench_panel.py`)
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path as _Path
+
+    project_root = _Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    __package__ = "src.ui.panels"
+
 import csv
 from pathlib import Path
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore[import-not-found]
@@ -56,8 +67,10 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.backtest_equity_template = base_dir / 'rendering' / 'templates' / 'backtest_equity.html'
         self._equity_dialog: Optional[EChartsPreviewDialog] = None
 
-        self.scanner = StrategyScanner(registry)
+        # Faster scan defaults: larger batch, fewer rows per symbol
+        self.scanner = StrategyScanner(registry, batch_size=64, rows_per_symbol=800)
         self.scanner.progress.connect(self._append_scan_log)
+        self.scanner.progress.connect(self._on_scan_progress)
         self.scanner.finished.connect(self._on_scan_finished)
         self.scanner.failed.connect(self._on_scan_failed)
         self.scanner.cancelled.connect(self._on_scan_cancelled)
@@ -71,6 +84,9 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.backtest_kpis: Dict[str, QtWidgets.QLabel] = {}
         self.scan_running = False
         self.backtest_running = False
+        self.scan_progress_label: Optional[QtWidgets.QLabel] = None
+        self.scan_total_count = 0
+        self.scan_processed_count = 0
 
         self._build_ui()
         self.refresh_strategy_items()
@@ -196,6 +212,14 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.scan_universe.setPlaceholderText('留空使用全部股票')
         form.addRow('股票池:', self.scan_universe)
 
+        self.scan_board_filter = QtWidgets.QListWidget(tab)
+        self.scan_board_filter.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
+        for name in ['创业板', '科创板', '北交所', '新三板']:
+            item = QtWidgets.QListWidgetItem(name)
+            item.setCheckState(QtCore.Qt.Unchecked)
+            self.scan_board_filter.addItem(item)
+        form.addRow('板块过滤:', self.scan_board_filter)
+
         self.scan_start = QtWidgets.QDateEdit(tab)
         self.scan_start.setCalendarPopup(True)
         self.scan_start.setDate(QtCore.QDate.currentDate().addYears(-1))
@@ -219,6 +243,9 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.scan_cancel_button.setVisible(False)
         action_row.addWidget(self.scan_cancel_button)
 
+        self.scan_progress_label = QtWidgets.QLabel('进度 0/0', tab)
+        self.scan_progress_label.setProperty('class', 'muted')
+        action_row.addWidget(self.scan_progress_label)
         action_row.addStretch(1)
 
         self.scan_export_button = QtWidgets.QPushButton('导出 CSV', tab)
@@ -509,20 +536,28 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         return result
 
     # ------------------------------------------------------------------
-    def _resolve_universe(self, text_field: QtWidgets.QLineEdit) -> List[str]:
+    def _resolve_universe(self, text_field: QtWidgets.QLineEdit, *, prefer_selected: bool = False) -> List[str]:
         raw = text_field.text().strip()
         if raw:
             return [token.strip() for token in raw.split(',') if token.strip()]
+
         auto_value = text_field.property('autoFilledValue')
-        if isinstance(auto_value, str):
-            if auto_value:
-                return [auto_value]
-            return self.universe_provider()
-        if self.selected_symbol_provider:
+        if isinstance(auto_value, str) and auto_value:
+            return [auto_value]
+
+        try:
+            universe = list(self.universe_provider() or [])
+        except Exception:
+            universe = []
+        if universe:
+            return universe
+
+        if prefer_selected and self.selected_symbol_provider:
             selected = self.selected_symbol_provider()
             if selected:
                 return [selected]
-        return self.universe_provider()
+
+        return []
 
     def _run_preview(self) -> None:
         definition = self._current_definition()
@@ -547,6 +582,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, '策略缺失', '请选择策略')
             return
         universe = self._resolve_universe(self.scan_universe)
+        universe = self._filter_universe_by_board(universe)
         if not universe:
             QtWidgets.QMessageBox.warning(self, '股票池为空', '请先加载股票列表')
             return
@@ -555,6 +591,9 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, '缺少数据库', '请先选择数据库文件')
             return
 
+        self.scan_total_count = len(universe)
+        self.scan_processed_count = 0
+        self._update_scan_progress_label()
         request = ScanRequest(
             strategy_key=definition.key,
             universe=universe,
@@ -689,12 +728,24 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         if 0 <= row < len(self.scan_results):
             table_name = self.scan_results[row].table_name
             self.load_symbol_handler(table_name)
+            self._preview_current_strategy()
 
     def _append_scan_log(self, message: str) -> None:
         self.scan_log.append(message)
 
+    def _on_scan_progress(self, message: str) -> None:
+        match = re.search(r"\((\d+)/(\d+)\)", message)
+        if match:
+            try:
+                self.scan_processed_count = int(match.group(1))
+                self.scan_total_count = int(match.group(2))
+                self._update_scan_progress_label()
+            except ValueError:
+                pass
+
     def _on_scan_finished(self, results: object) -> None:
         parsed = list(results or [])
+        self.scan_processed_count = self.scan_total_count or len(parsed)
         self._populate_scan_results(parsed)
         self._toggle_scan_controls(False)
 
@@ -712,6 +763,70 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.scan_cancel_button.setVisible(running)
         self.scan_cancel_button.setEnabled(running)
         self._update_scan_action_state()
+        if not running and self.scan_total_count:
+            self.scan_processed_count = min(self.scan_processed_count, self.scan_total_count)
+            self._update_scan_progress_label()
+
+    def _preview_current_strategy(self) -> None:
+        if not self.preview_handler:
+            return
+        definition = self._current_definition()
+        if not definition:
+            return
+        params = self._collect_params()
+        try:
+            self.preview_handler(definition.key, params)
+        except Exception as exc:  # pragma: no cover - runtime diagnostics
+            self.scan_log.append(f'预览失败: {exc}')
+
+    def _filter_universe_by_board(self, universe: List[str]) -> List[str]:
+        if not hasattr(self, 'scan_board_filter'):
+            return universe
+        selected_boards = [
+            item.text()
+            for item in self.scan_board_filter.findItems('*', QtCore.Qt.MatchWrap | QtCore.Qt.MatchWildcard)
+            if item.checkState() == QtCore.Qt.Checked
+        ]
+        if not selected_boards:
+            return universe
+        filtered: List[str] = []
+        for code in universe:
+            if any(self._matches_board(code, board) for board in selected_boards):
+                filtered.append(code)
+        return filtered
+
+    @staticmethod
+    def _matches_board(code: str, board: str) -> bool:
+        code_upper = (code or "").upper()
+        # Normalize common prefixes: ensure exchange prefix present
+        # Assume tables may be raw numeric like 300001, 688001, 830001, 430001, 800*** (BSE), or full SZ300001/SH688001/BJ800***.
+        if code_upper.startswith("SZ") or code_upper.startswith("SH") or code_upper.startswith("BJ"):
+            normalized = code_upper
+        elif code_upper.startswith("8") or code_upper.startswith("4"):
+            normalized = f"BJ{code_upper}"
+        elif code_upper.startswith("3"):
+            normalized = f"SZ{code_upper}"
+        elif code_upper.startswith("6"):
+            normalized = f"SH{code_upper}"
+        else:
+            normalized = code_upper
+
+        if board == "创业板":
+            return normalized.startswith("SZ300") or normalized.startswith("SZ301")
+        if board == "科创板":
+            return normalized.startswith("SH688") or normalized.startswith("SH689")
+        if board == "北交所":
+            return normalized.startswith("BJ8") or normalized.startswith("BJ4")
+        if board == "新三板":
+            return normalized.startswith("43") or normalized.startswith("83") or normalized.startswith("87") or normalized.startswith("BJ43") or normalized.startswith("BJ83") or normalized.startswith("BJ87")
+        return False
+
+    def _update_scan_progress_label(self) -> None:
+        if self.scan_progress_label is None:
+            return
+        total = max(self.scan_total_count, 0)
+        processed = min(self.scan_processed_count, total) if total else self.scan_processed_count
+        self.scan_progress_label.setText(f'进度 {processed}/{total}')
 
     def _update_scan_action_state(self) -> None:
         has_results = bool(self.scan_results)
@@ -775,7 +890,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         if not definition:
             QtWidgets.QMessageBox.warning(self, '策略缺失', '请选择策略')
             return
-        universe = self._resolve_universe(self.backtest_universe)
+        universe = self._resolve_universe(self.backtest_universe, prefer_selected=True)
         if not universe:
             QtWidgets.QMessageBox.warning(self, '股票池为空', '请先加载股票列表')
             return

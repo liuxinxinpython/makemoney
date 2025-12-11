@@ -10,12 +10,13 @@
 - **缓存与热加载**：标的列表、行情数据均有缓存策略，缺少最新价/涨跌幅字段时会自动刷新数据库。
 - **策略工作台**：右侧面板集中 ZigZag 参数、即时预览、批量扫描和历史回测，可随时展开或折叠。
 - **统一 ZigZag 实现**：所有策略分析均使用 `zigzag_wave_peaks_valleys`，确保指标一致、调参简单。
+- **Tushare 日线同步**：数据页新增 Token 输入与日期选择，可按交易日批量补齐日线数据，自动创建缺失表并刷新标的。
 
 ## 运行环境
 
 - Windows 10+（推荐，开发环境）或支持 PyQt5 的其他桌面系统
 - Python 3.9 及以上
-- 依赖：`PyQt5`, `PyQtWebEngine`, `pandas`, `numpy`, `scipy`, `akshare`（可选，用于补数）
+- 依赖：`PyQt5`, `PyQtWebEngine`, `pandas`, `numpy`, `scipy`, `akshare`（可选，用于补数），`tushare`（可选，用于在线同步）
 
 ## 快速开始
 
@@ -24,7 +25,9 @@ git clone https://github.com/liuxinxinpython/makemoney.git
 cd makemoney
 python -m venv .venv
 .venv\Scripts\activate        # Linux/macOS 请改为 source .venv/bin/activate
-pip install PyQt5 PyQtWebEngine pandas numpy scipy akshare
+pip install PyQt5 PyQtWebEngine pandas numpy scipy akshare tushare
+# 如需提前保存 Token，可写入用户目录：Windows: echo YOUR_TOKEN > %USERPROFILE%\\.tushare_token
+# macOS/Linux:  echo "YOUR_TOKEN" > ~/.tushare_token
 python main.py
 ```
 
@@ -39,6 +42,14 @@ python main.py
 5. **查看策略结果**：工具栏 `策略选股` 按钮会打开右侧策略工作台，可配置最小反转幅度、触发即时预览或批量扫描，扫描结果双击即可将标的带回主图。
 6. **监控日志**：数据导入和策略执行均会写入独立日志对话框，同时在状态栏显示进度条。
 7. **切换视图**：左侧导航可在“行情 / 数据 / 策略”间切换，进入行情或数据时会自动收起策略侧边栏，保持主图区域最大化。
+
+## Tushare 日线同步
+
+- **输入 Token**：在“数据”页的 Tushare 区域粘贴 Token，可点击“保存 Token”写入 `~/.tushare_token`（下次启动自动填充）。
+- **选择日期区间**：默认补齐最近 180 天，可在起止日期选择器中指定同步范围（按交易日批量拉取并拆分写表）。
+- **执行同步**：点击“用 Tushare 更新日线”，进度条与日志会实时显示请求/写入状态；任务完成后会自动刷新标的列表。
+- **接口校验**：支持“测试接口”按钮快速验证 Token 可用性与 `daily` 权限，避免长任务才发现配额问题。
+- **行为说明**：同步时会检测表缺失并自动创建，写入前清理重叠日期避免重复行，默认不依赖 `trade_cal` 权限。
 
 ## 目录结构（节选）
 

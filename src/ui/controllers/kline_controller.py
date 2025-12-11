@@ -15,11 +15,9 @@ except Exception:  # pragma: no cover - fallback when optional modules missing
     SymbolLoadWorker = None
 
 try:
-    from ...rendering import TEMPLATE_PATH, build_mock_candles, load_maotai_candles, render_html  # type: ignore[import-not-found]
+    from ...rendering import TEMPLATE_PATH, render_html  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - fallback defaults
     TEMPLATE_PATH = Path(__file__).parent.parent / "rendering" / "templates" / "tradingview_template.html"
-    build_mock_candles = None
-    load_maotai_candles = None
     render_html = None
 
 try:
@@ -136,25 +134,7 @@ class KLineController(QtCore.QObject):
         self.loading_progress.setVisible(True)
         self.status_bar.showMessage("正在加载数据...")
         self.refresh_symbols_async()
-
-        data_tuple = load_maotai_candles() if load_maotai_candles else None
-        if not data_tuple and build_mock_candles:
-            data_tuple = build_mock_candles()
-            self._log("无法获取茅台数据，改用示例数据。")
-        elif data_tuple:
-            self._log("已加载茅台行情数据。")
-
-        if data_tuple:
-            candles, volumes, instrument = data_tuple
-            self.current_table = None
-            self.current_symbol = instrument.get("symbol") if instrument else None
-            self.current_symbol_name = instrument.get("name") if instrument else ""
-            self.current_markers = []
-            self.current_overlays = []
-            self._render_chart(candles, volumes, instrument, [], [])
-
-        self.loading_progress.setVisible(False)
-        self.status_bar.showMessage("数据加载完成")
+        # 初始不加载示例数据，等待数据库股票列表加载完成后自动切换到第一只股票
 
     def refresh_symbols_async(self, select: Optional[str] = None) -> None:
         if SymbolLoadWorker is None:

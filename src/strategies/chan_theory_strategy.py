@@ -29,29 +29,29 @@ except Exception:  # pragma: no cover - optional import
 
 from .helpers import serialize_run_result
 
-
+# UI parameters for the workbench panel.
 if StrategyParameter is not None:
     CHAN_STRATEGY_PARAMETERS: List[StrategyParameter] = [
         StrategyParameter(
             key="swing_window",
-            label="分型窗口",
+            label="Fractal window",
             type="number",
             default=3,
-            description="检测分型时向前向后比较的K线数量",
+            description="How many candles to the left/right when detecting swing highs/lows.",
         ),
         StrategyParameter(
             key="min_move_pct",
-            label="最小笔幅度(%)",
+            label="Min stroke amplitude (%)",
             type="number",
             default=3.0,
-            description="小于该幅度的波动不构成有效笔",
+            description="Moves smaller than this are ignored when building strokes.",
         ),
         StrategyParameter(
             key="divergence_pct",
-            label="背驰阈值(%)",
+            label="Divergence threshold (%)",
             type="number",
             default=5.0,
-            description="一二买卖判断时要求的高低点抬升/下降幅度",
+            description="Required price separation to call a 2nd buy/sell divergence.",
         ),
     ]
 else:  # pragma: no cover - optional UI metadata
@@ -63,38 +63,38 @@ class Fractal:
     index: int
     time: str
     price: float
-    kind: str  # 'top' 或 'bottom'
+    kind: str  # 'top' or 'bottom'
 
 
 @dataclass
 class Stroke:
     start: Fractal
     end: Fractal
-    direction: str  # 'up' 或 'down'
+    direction: str  # 'up' or 'down'
     amplitude: float
 
 
 @dataclass
 class ChanSignal:
     label: str
-    category: str  # 'buy' 或 'sell'
+    category: str  # 'buy' or 'sell'
     fractal: Fractal
     strength: float
     reason: str
 
     def to_marker(self, sequence: int) -> Dict[str, Any]:
-        color = '#4caf50' if self.category == 'buy' else '#f44336'
-        position = 'belowBar' if self.category == 'buy' else 'aboveBar'
-        shape = 'arrowUp' if self.category == 'buy' else 'arrowDown'
+        color = "#4caf50" if self.category == "buy" else "#f44336"
+        position = "belowBar" if self.category == "buy" else "aboveBar"
+        shape = "arrowUp" if self.category == "buy" else "arrowDown"
         return {
-            'id': f'chan_{self.category}_{sequence}',
-            'time': self.fractal.time,
-            'position': position,
-            'shape': shape,
-            'color': color,
-            'text': f"{self.label} {self.fractal.price:.2f} ({self.reason})",
-            'size': 2,
-            'price': self.fractal.price,
+            "id": f"chan_{self.category}_{sequence}",
+            "time": self.fractal.time,
+            "position": position,
+            "shape": shape,
+            "color": color,
+            "text": f"{self.label} {self.fractal.price:.2f} ({self.reason})",
+            "size": 2,
+            "price": self.fractal.price,
         }
 
 
@@ -109,11 +109,11 @@ class ChanTheoryAnalyzer:
     def run(self) -> Dict[str, Any]:
         if len(self.candles) < (self.swing_window * 2 + 5):
             return {
-                'markers': [],
-                'overlays': [],
-                'signals': [],
-                'stats': {'stroke_count': 0, 'zone_count': 0, 'buy_signals': 0, 'sell_signals': 0},
-                'strokes': [],
+                "markers": [],
+                "overlays": [],
+                "signals": [],
+                "stats": {"stroke_count": 0, "zone_count": 0, "buy_signals": 0, "sell_signals": 0},
+                "strokes": [],
             }
         cutoff_dt = self._cutoff_datetime()
         fractals = self._detect_fractals()
@@ -124,27 +124,29 @@ class ChanTheoryAnalyzer:
         overlays = self._build_overlays(zones, cutoff_dt)
         strokes_payload = [
             {
-                'startTime': stroke.start.time,
-                'endTime': stroke.end.time,
-                'startPrice': stroke.start.price,
-                'endPrice': stroke.end.price,
-                'direction': stroke.direction,
+                "startTime": stroke.start.time,
+                "endTime": stroke.end.time,
+                "startPrice": stroke.start.price,
+                "endPrice": stroke.end.price,
+                "direction": stroke.direction,
+                "kind": "stroke",
+                "label": f"Stroke#{idx + 1}",
             }
-            for stroke in strokes
+            for idx, stroke in enumerate(strokes)
         ]
 
         stats = {
-            'stroke_count': len(strokes),
-            'zone_count': len(zones),
-            'buy_signals': sum(1 for s in signals if s.category == 'buy'),
-            'sell_signals': sum(1 for s in signals if s.category == 'sell'),
+            "stroke_count": len(strokes),
+            "zone_count": len(zones),
+            "buy_signals": sum(1 for s in signals if s.category == "buy"),
+            "sell_signals": sum(1 for s in signals if s.category == "sell"),
         }
-        return {'markers': markers, 'overlays': overlays, 'signals': signals, 'stats': stats, 'strokes': strokes_payload}
+        return {"markers": markers, "overlays": overlays, "signals": signals, "stats": stats, "strokes": strokes_payload}
 
     def _cutoff_datetime(self) -> Optional[datetime]:
         latest = None
         for candle in self.candles:
-            ts = self._parse_time_value(candle.get('time'))
+            ts = self._parse_time_value(candle.get("time"))
             if ts and (latest is None or ts > latest):
                 latest = ts
         if latest is None:
@@ -184,18 +186,18 @@ class ChanTheoryAnalyzer:
         last_top: Optional[Fractal] = None
         last_bottom: Optional[Fractal] = None
         for idx in range(win, len(self.candles) - win):
-            high = self.candles[idx]['high']
-            low = self.candles[idx]['low']
-            is_top = all(high >= self.candles[j]['high'] for j in range(idx - win, idx + win + 1))
-            is_bottom = all(low <= self.candles[j]['low'] for j in range(idx - win, idx + win + 1))
-            time_value = str(self.candles[idx]['time'])
+            high = self.candles[idx]["high"]
+            low = self.candles[idx]["low"]
+            is_top = all(high >= self.candles[j]["high"] for j in range(idx - win, idx + win + 1))
+            is_bottom = all(low <= self.candles[j]["low"] for j in range(idx - win, idx + win + 1))
+            time_value = str(self.candles[idx]["time"])
             if is_top:
-                fractal = Fractal(idx, time_value, float(high), 'top')
+                fractal = Fractal(idx, time_value, float(high), "top")
                 if last_top is None or fractal.price >= last_top.price or fractal.index - last_top.index >= win:
                     last_top = fractal
                     results.append(fractal)
             elif is_bottom:
-                fractal = Fractal(idx, time_value, float(low), 'bottom')
+                fractal = Fractal(idx, time_value, float(low), "bottom")
                 if last_bottom is None or fractal.price <= last_bottom.price or fractal.index - last_bottom.index >= win:
                     last_bottom = fractal
                     results.append(fractal)
@@ -209,15 +211,15 @@ class ChanTheoryAnalyzer:
         anchor = fractals[0]
         for point in fractals[1:]:
             if point.kind == anchor.kind:
-                if (point.kind == 'top' and point.price > anchor.price) or (point.kind == 'bottom' and point.price < anchor.price):
+                if (point.kind == "top" and point.price > anchor.price) or (point.kind == "bottom" and point.price < anchor.price):
                     anchor = point
                 continue
             amplitude = abs(point.price - anchor.price) / max(anchor.price, 1e-6)
             if amplitude < self.min_move:
-                if (point.kind == 'top' and point.price > anchor.price) or (point.kind == 'bottom' and point.price < anchor.price):
+                if (point.kind == "top" and point.price > anchor.price) or (point.kind == "bottom" and point.price < anchor.price):
                     anchor = point
                 continue
-            direction = 'up' if point.price > anchor.price else 'down'
+            direction = "up" if point.price > anchor.price else "down"
             strokes.append(Stroke(anchor, point, direction, amplitude))
             anchor = point
         return strokes
@@ -235,13 +237,15 @@ class ChanTheoryAnalyzer:
             zone_bottom = max(lows)
             if zone_top <= zone_bottom:
                 continue
-            zones.append({
-                'index': counter,
-                'start_time': s1.start.time,
-                'end_time': s3.end.time,
-                'top': zone_top,
-                'bottom': zone_bottom,
-            })
+            zones.append(
+                {
+                    "index": counter,
+                    "start_time": s1.start.time,
+                    "end_time": s3.end.time,
+                    "top": zone_top,
+                    "bottom": zone_bottom,
+                }
+            )
             counter += 1
         return zones
 
@@ -250,23 +254,23 @@ class ChanTheoryAnalyzer:
         for idx in range(1, len(strokes)):
             prev = strokes[idx - 1]
             curr = strokes[idx]
-            if prev.direction == 'down' and curr.direction == 'up':
-                reason = f"跌{prev.amplitude * 100:.1f}%↗涨{curr.amplitude * 100:.1f}%"
-                signals.append(ChanSignal('一买', 'buy', prev.end, max(prev.amplitude, curr.amplitude), reason))
-            elif prev.direction == 'up' and curr.direction == 'down':
-                reason = f"涨{prev.amplitude * 100:.1f}%↘跌{curr.amplitude * 100:.1f}%"
-                signals.append(ChanSignal('一卖', 'sell', prev.end, max(prev.amplitude, curr.amplitude), reason))
+            if prev.direction == "down" and curr.direction == "up":
+                reason = f"Down {prev.amplitude * 100:.1f}% -> Up {curr.amplitude * 100:.1f}%"
+                signals.append(ChanSignal("Buy-1", "buy", prev.end, max(prev.amplitude, curr.amplitude), reason))
+            elif prev.direction == "up" and curr.direction == "down":
+                reason = f"Up {prev.amplitude * 100:.1f}% -> Down {curr.amplitude * 100:.1f}%"
+                signals.append(ChanSignal("Sell-1", "sell", prev.end, max(prev.amplitude, curr.amplitude), reason))
 
         for idx in range(2, len(strokes)):
             s1, s2, s3 = strokes[idx - 2], strokes[idx - 1], strokes[idx]
-            if s1.direction == 'down' and s2.direction == 'up' and s3.direction == 'down':
+            if s1.direction == "down" and s2.direction == "up" and s3.direction == "down":
                 if s3.end.price > s1.end.price and ((s3.end.price - s1.end.price) / max(s1.end.price, 1e-6)) >= self.divergence:
-                    reason = f"高低点抬升{(s3.end.price - s1.end.price) / max(s1.end.price, 1e-6) * 100:.1f}%"
-                    signals.append(ChanSignal('二买', 'buy', s3.end, s2.amplitude, reason))
-            if s1.direction == 'up' and s2.direction == 'down' and s3.direction == 'up':
+                    reason = f"Low raises by {(s3.end.price - s1.end.price) / max(s1.end.price, 1e-6) * 100:.1f}%"
+                    signals.append(ChanSignal("Buy-2", "buy", s3.end, s2.amplitude, reason))
+            if s1.direction == "up" and s2.direction == "down" and s3.direction == "up":
                 if s3.end.price < s1.end.price and ((s1.end.price - s3.end.price) / max(s1.end.price, 1e-6)) >= self.divergence:
-                    reason = f"高点下降{(s1.end.price - s3.end.price) / max(s1.end.price, 1e-6) * 100:.1f}%"
-                    signals.append(ChanSignal('二卖', 'sell', s3.end, s2.amplitude, reason))
+                    reason = f"High drops by {(s1.end.price - s3.end.price) / max(s1.end.price, 1e-6) * 100:.1f}%"
+                    signals.append(ChanSignal("Sell-2", "sell", s3.end, s2.amplitude, reason))
         return signals
 
     def _build_markers(self, signals: List[ChanSignal], cutoff: Optional[datetime]) -> List[Dict[str, Any]]:
@@ -283,25 +287,27 @@ class ChanTheoryAnalyzer:
         overlays: List[Dict[str, Any]] = []
         for zone in zones:
             if cutoff:
-                end_ts = self._parse_time_value(zone['end_time'])
+                end_ts = self._parse_time_value(zone["end_time"])
                 if end_ts and end_ts < cutoff:
                     continue
-            overlays.append({
-                'startTime': zone['start_time'],
-                'endTime': zone['end_time'],
-                'top': zone['top'],
-                'bottom': zone['bottom'],
-                'kind': 'sideways',
-                'label': f"中枢#{zone['index']}",
-                'color': 'rgba(255,215,0,0.18)',
-            })
+            overlays.append(
+                {
+                    "startTime": zone["start_time"],
+                    "endTime": zone["end_time"],
+                    "top": zone["top"],
+                    "bottom": zone["bottom"],
+                    "kind": "sideways",
+                    "label": f"Zone#{zone['index']}",
+                    "color": "rgba(255,215,0,0.18)",
+                }
+            )
         return overlays
 
 
 class ChanTheoryStrategy:
     def __init__(self, *, swing_window: int = 3, min_move_pct: float = 0.03, divergence_pct: float = 0.05):
         if not HAS_DATA_LOADER:
-            raise ImportError('缺少 data_loader 模块，无法加载K线数据')
+            raise ImportError("Missing data_loader module; cannot load candles.")
         self.swing_window = max(2, int(swing_window))
         self.min_move_pct = max(0.0005, float(min_move_pct))
         self.divergence_pct = max(0.0005, float(divergence_pct))
@@ -309,38 +315,38 @@ class ChanTheoryStrategy:
     def scan_current_symbol(self, db_path: Path, table_name: str) -> Optional[Any]:
         data = load_candles_from_sqlite(db_path, table_name)
         if data is None:
-            raise ValueError(f'无法加载股票 {table_name} 的数据')
+            raise ValueError(f"Unable to load candles for symbol {table_name}")
         candles, _volumes, _instrument = data
         analyzer = ChanTheoryAnalyzer(candles, self.swing_window, self.min_move_pct, self.divergence_pct)
         result = analyzer.run()
-        markers = result['markers']
-        overlays = result['overlays']
-        stats = result['stats']
-        strokes = result.get('strokes', [])
+        markers = result["markers"]
+        overlays = result["overlays"]
+        stats = result["stats"]
+        strokes = result.get("strokes", [])
         status_message = (
-            f"缠论识别: {stats['stroke_count']} 笔, {stats['zone_count']} 中枢, "
-            f"买点 {stats['buy_signals']} / 卖点 {stats['sell_signals']}"
+            f"Chan strokes: {stats['stroke_count']} strokes, {stats['zone_count']} zones, "
+            f"buys {stats['buy_signals']} / sells {stats['sell_signals']}"
         )
         if HAS_DISPLAY:
             return DisplayResult(
-                strategy_name='chan_theory',
+                strategy_name="chan_theory",
                 markers=markers,
                 overlays=overlays,
                 status_message=status_message,
-                extra_data={'strokes': strokes},
+                extra_data={"strokes": strokes},
             )
         return {
-            'strategy_name': 'chan_theory',
-            'markers': markers,
-            'overlays': overlays,
-            'status_message': status_message,
-            'extra_data': {'strokes': strokes},
+            "strategy_name": "chan_theory",
+            "markers": markers,
+            "overlays": overlays,
+            "status_message": status_message,
+            "extra_data": {"strokes": strokes},
         }
 
 
 def run_chan_workbench(context: "StrategyContext") -> "StrategyRunResult":
     if StrategyContext is None or StrategyRunResult is None:
-        raise RuntimeError('策略运行环境不可用')
+        raise RuntimeError("Strategy runtime not available.")
     params = context.params or {}
 
     def _get_float(key: str, default: float) -> float:
@@ -355,9 +361,9 @@ def run_chan_workbench(context: "StrategyContext") -> "StrategyRunResult":
         except (TypeError, ValueError):
             return default
 
-    swing_window = max(2, _get_int('swing_window', 3))
-    min_move_pct = max(0.0005, _get_float('min_move_pct', 3.0) / 100.0)
-    divergence_pct = max(0.0005, _get_float('divergence_pct', 5.0) / 100.0)
+    swing_window = max(2, _get_int("swing_window", 3))
+    min_move_pct = max(0.0005, _get_float("min_move_pct", 3.0) / 100.0)
+    divergence_pct = max(0.0005, _get_float("divergence_pct", 5.0) / 100.0)
 
     strategy = ChanTheoryStrategy(
         swing_window=swing_window,
@@ -365,6 +371,7 @@ def run_chan_workbench(context: "StrategyContext") -> "StrategyRunResult":
         divergence_pct=divergence_pct,
     )
     raw_result = strategy.scan_current_symbol(context.db_path, context.table_name)
-    return serialize_run_result('chan_theory', raw_result)
+    return serialize_run_result("chan_theory", raw_result)
 
-__all__ = ['ChanTheoryStrategy', 'CHAN_STRATEGY_PARAMETERS', 'run_chan_workbench']
+
+__all__ = ["ChanTheoryStrategy", "CHAN_STRATEGY_PARAMETERS", "run_chan_workbench"]

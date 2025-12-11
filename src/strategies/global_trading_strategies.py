@@ -21,58 +21,54 @@ from .helpers import serialize_run_result
 
 def _build_strategy_parameters() -> Dict[str, List[Any]]:
     if StrategyParameter is None:
-        return {
-            "ma": [],
-            "rsi": [],
-            "donchian": [],
-        }
+        return {"ma": [], "rsi": [], "donchian": []}
     return {
         "ma": [
             StrategyParameter(
                 key="short_window",
-                label="短周期",
+                label="Short window",
                 type="number",
                 default=20,
-                description="较快均线窗口, 常用 5/10/20。",
+                description="Fast moving average window (e.g., 5/10/20).",
             ),
             StrategyParameter(
                 key="long_window",
-                label="长周期",
+                label="Long window",
                 type="number",
                 default=50,
-                description="较慢均线窗口, 常用 30/50/60。",
+                description="Slow moving average window (e.g., 30/50/60).",
             ),
         ],
         "rsi": [
             StrategyParameter(
                 key="period",
-                label="RSI 周期",
+                label="RSI period",
                 type="number",
                 default=14,
-                description="计算 RSI 的回看窗口, 默认为 14。",
+                description="Lookback window for RSI calculation.",
             ),
             StrategyParameter(
                 key="oversold",
-                label="超卖阈值",
+                label="Oversold threshold",
                 type="number",
                 default=30.0,
-                description="RSI 低于该值触发买入。",
+                description="RSI below this triggers buy consideration.",
             ),
             StrategyParameter(
                 key="overbought",
-                label="超买阈值",
+                label="Overbought threshold",
                 type="number",
                 default=70.0,
-                description="RSI 高于该值触发卖出。",
+                description="RSI above this triggers sell consideration.",
             ),
         ],
         "donchian": [
             StrategyParameter(
                 key="lookback",
-                label="回看周期",
+                label="Lookback period",
                 type="number",
                 default=20,
-                description="构建唐奇安通道的历史窗口长度。",
+                description="Window size to build Donchian channel.",
             ),
         ],
     }
@@ -83,20 +79,20 @@ PARAMETERS_BY_STRATEGY = _build_strategy_parameters()
 
 def _assert_loader_available() -> None:
     if load_candles_from_sqlite is None:
-        raise ImportError("缺少 data_loader 模块，无法加载行情数据。")
+        raise ImportError("Missing data_loader module; cannot load price data.")
 
 
 def _load_symbol_data(db_path: Path, table_name: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     _assert_loader_available()
     data = load_candles_from_sqlite(db_path, table_name)
     if not data:
-        raise ValueError(f"无法加载 {table_name} 的历史数据。")
+        raise ValueError(f"Unable to load history for {table_name}")
     return data
 
 
 def _sma(values: List[float], window: int) -> List[Optional[float]]:
     if window <= 0:
-        raise ValueError("均线窗口需大于0")
+        raise ValueError("SMA window must be > 0")
     result: List[Optional[float]] = [None] * len(values)
     if len(values) < window:
         return result
@@ -110,7 +106,7 @@ def _sma(values: List[float], window: int) -> List[Optional[float]]:
 
 def _compute_rsi(values: List[float], period: int) -> List[Optional[float]]:
     if period <= 0:
-        raise ValueError("RSI 周期需大于0")
+        raise ValueError("RSI period must be > 0")
     result: List[Optional[float]] = [None] * len(values)
     if len(values) <= period:
         return result
@@ -144,11 +140,11 @@ def _compute_rsi(values: List[float], period: int) -> List[Optional[float]]:
 
 
 class MovingAverageCrossoverStrategy:
-    """典型的均线金叉/死叉策略。"""
+    """Simple MA golden cross / death cross strategy."""
 
     def __init__(self, short_window: int = 20, long_window: int = 50) -> None:
         if short_window >= long_window:
-            raise ValueError("短周期必须小于长周期。")
+            raise ValueError("Short window must be smaller than long window.")
         self.short_window = short_window
         self.long_window = long_window
 
@@ -176,42 +172,50 @@ class MovingAverageCrossoverStrategy:
             crossover = s_now > l_now and s_prev <= l_prev
             crossunder = s_now < l_now and s_prev >= l_prev
             if crossover:
-                markers.append({
-                    "id": f"ma_buy_{idx}",
-                    "time": time_val,
-                    "position": "belowBar",
-                    "color": "#22c55e",
-                    "shape": "arrowUp",
-                    "text": f"BUY {price:.2f}",
-                })
+                markers.append(
+                    {
+                        "id": f"ma_buy_{idx}",
+                        "time": time_val,
+                        "position": "belowBar",
+                        "color": "#22c55e",
+                        "shape": "arrowUp",
+                        "text": f"BUY {price:.2f}",
+                    }
+                )
                 open_trade = {
                     "entry_time": time_val,
                     "entry_price": price,
-                    "entry_reason": "金叉买入",
+                    "entry_reason": "MA golden cross",
                 }
-                scan_candidates.append({
-                    "date": time_val,
-                    "price": price,
-                    "score": round((s_now - l_now) / l_now, 4),
-                    "note": "金叉买入",
-                })
+                scan_candidates.append(
+                    {
+                        "date": time_val,
+                        "price": price,
+                        "score": round((s_now - l_now) / l_now, 4),
+                        "note": "Golden cross",
+                    }
+                )
             elif crossunder and open_trade:
-                markers.append({
-                    "id": f"ma_sell_{idx}",
-                    "time": time_val,
-                    "position": "aboveBar",
-                    "color": "#f87171",
-                    "shape": "arrowDown",
-                    "text": f"SELL {price:.2f}",
-                })
-                open_trade.update({
-                    "exit_time": time_val,
-                    "exit_price": price,
-                    "exit_reason": "死叉卖出",
-                })
+                markers.append(
+                    {
+                        "id": f"ma_sell_{idx}",
+                        "time": time_val,
+                        "position": "aboveBar",
+                        "color": "#f87171",
+                        "shape": "arrowDown",
+                        "text": f"SELL {price:.2f}",
+                    }
+                )
+                open_trade.update(
+                    {
+                        "exit_time": time_val,
+                        "exit_price": price,
+                        "exit_reason": "MA death cross",
+                    }
+                )
                 trades.append(open_trade)
                 open_trade = None
-        status = f"金叉次数: {sum(1 for m in markers if 'BUY' in m['text'])} · 死叉次数: {sum(1 for m in markers if 'SELL' in m['text'])}"
+        status = f"Golden crosses: {sum(1 for m in markers if 'BUY' in m['text'])} · Death crosses: {sum(1 for m in markers if 'SELL' in m['text'])}"
         return {
             "strategy_name": "ma_crossover",
             "markers": markers,
@@ -224,11 +228,11 @@ class MovingAverageCrossoverStrategy:
 
 
 class RSIMeanReversionStrategy:
-    """经典 RSI 超买超卖反转策略。"""
+    """RSI overbought/oversold mean-reversion strategy."""
 
     def __init__(self, period: int = 14, oversold: float = 30.0, overbought: float = 70.0) -> None:
         if oversold >= overbought:
-            raise ValueError("超卖阈值必须小于超买阈值。")
+            raise ValueError("Oversold must be below overbought.")
         self.period = period
         self.oversold = oversold
         self.overbought = overbought
@@ -254,42 +258,50 @@ class RSIMeanReversionStrategy:
             crossed_up = prev_rsi < self.oversold and rsi_value >= self.oversold
             crossed_down = prev_rsi > self.overbought and rsi_value <= self.overbought
             if crossed_up:
-                markers.append({
-                    "id": f"rsi_buy_{idx}",
-                    "time": time_val,
-                    "position": "belowBar",
-                    "color": "#10b981",
-                    "shape": "circle",
-                    "text": f"RSI BUY {rsi_value:.1f}",
-                })
+                markers.append(
+                    {
+                        "id": f"rsi_buy_{idx}",
+                        "time": time_val,
+                        "position": "belowBar",
+                        "color": "#10b981",
+                        "shape": "circle",
+                        "text": f"RSI BUY {rsi_value:.1f}",
+                    }
+                )
                 open_trade = {
                     "entry_time": time_val,
                     "entry_price": price,
-                    "entry_reason": "RSI脱离超卖",
+                    "entry_reason": "RSI exits oversold",
                 }
-                scan_candidates.append({
-                    "date": time_val,
-                    "price": price,
-                    "score": round(1 - rsi_value / 100.0, 4),
-                    "note": "RSI买点",
-                })
+                scan_candidates.append(
+                    {
+                        "date": time_val,
+                        "price": price,
+                        "score": round(1 - rsi_value / 100.0, 4),
+                        "note": "RSI buy",
+                    }
+                )
             elif crossed_down and open_trade:
-                markers.append({
-                    "id": f"rsi_sell_{idx}",
-                    "time": time_val,
-                    "position": "aboveBar",
-                    "color": "#f97316",
-                    "shape": "circle",
-                    "text": f"RSI SELL {rsi_value:.1f}",
-                })
-                open_trade.update({
-                    "exit_time": time_val,
-                    "exit_price": price,
-                    "exit_reason": "RSI回落",
-                })
+                markers.append(
+                    {
+                        "id": f"rsi_sell_{idx}",
+                        "time": time_val,
+                        "position": "aboveBar",
+                        "color": "#f97316",
+                        "shape": "circle",
+                        "text": f"RSI SELL {rsi_value:.1f}",
+                    }
+                )
+                open_trade.update(
+                    {
+                        "exit_time": time_val,
+                        "exit_price": price,
+                        "exit_reason": "RSI falls from overbought",
+                    }
+                )
                 trades.append(open_trade)
                 open_trade = None
-        status = f"RSI 买点: {sum(1 for m in markers if 'BUY' in m['text'])} · 卖点: {sum(1 for m in markers if 'SELL' in m['text'])}"
+        status = f"RSI buys: {sum(1 for m in markers if 'BUY' in m['text'])} · sells: {sum(1 for m in markers if 'SELL' in m['text'])}"
         return {
             "strategy_name": "rsi_reversion",
             "markers": markers,
@@ -302,11 +314,11 @@ class RSIMeanReversionStrategy:
 
 
 class DonchianBreakoutStrategy:
-    """唐奇安通道突破策略。"""
+    """Donchian channel breakout strategy."""
 
     def __init__(self, lookback: int = 20) -> None:
         if lookback < 5:
-            raise ValueError("回看周期需要≥5")
+            raise ValueError("Lookback must be >= 5")
         self.lookback = lookback
 
     def scan_current_symbol(self, db_path: Path, table_name: str) -> Dict[str, Any]:
@@ -317,49 +329,57 @@ class DonchianBreakoutStrategy:
         open_trade: Optional[Dict[str, Any]] = None
 
         for idx in range(self.lookback, len(candles)):
-            window = candles[idx - self.lookback:idx]
+            window = candles[idx - self.lookback : idx]
             upper = max(float(item["high"]) for item in window)
             lower = min(float(item["low"]) for item in window)
             candle = candles[idx]
             close_price = float(candle["close"])
             time_val = candle["time"]
             if open_trade is None and close_price > upper:
-                markers.append({
-                    "id": f"brk_buy_{idx}",
-                    "time": time_val,
-                    "position": "belowBar",
-                    "color": "#16a34a",
-                    "shape": "pin",
-                    "text": f"Breakout BUY {close_price:.2f}",
-                })
+                markers.append(
+                    {
+                        "id": f"brk_buy_{idx}",
+                        "time": time_val,
+                        "position": "belowBar",
+                        "color": "#16a34a",
+                        "shape": "pin",
+                        "text": f"Breakout BUY {close_price:.2f}",
+                    }
+                )
                 open_trade = {
                     "entry_time": time_val,
                     "entry_price": close_price,
-                    "entry_reason": "上轨突破",
+                    "entry_reason": "Upper band breakout",
                 }
-                scan_candidates.append({
-                    "date": time_val,
-                    "price": close_price,
-                    "score": 1.0,
-                    "note": "突破买入",
-                })
+                scan_candidates.append(
+                    {
+                        "date": time_val,
+                        "price": close_price,
+                        "score": 1.0,
+                        "note": "Breakout long",
+                    }
+                )
             elif open_trade and close_price < lower:
-                markers.append({
-                    "id": f"brk_sell_{idx}",
-                    "time": time_val,
-                    "position": "aboveBar",
-                    "color": "#dc2626",
-                    "shape": "pin",
-                    "text": f"Breakout SELL {close_price:.2f}",
-                })
-                open_trade.update({
-                    "exit_time": time_val,
-                    "exit_price": close_price,
-                    "exit_reason": "下轨离场",
-                })
+                markers.append(
+                    {
+                        "id": f"brk_sell_{idx}",
+                        "time": time_val,
+                        "position": "aboveBar",
+                        "color": "#dc2626",
+                        "shape": "pin",
+                        "text": f"Breakout SELL {close_price:.2f}",
+                    }
+                )
+                open_trade.update(
+                    {
+                        "exit_time": time_val,
+                        "exit_price": close_price,
+                        "exit_reason": "Lower band exit",
+                    }
+                )
                 trades.append(open_trade)
                 open_trade = None
-        status = f"突破信号: {sum(1 for m in markers if 'BUY' in m['text'])} 次"
+        status = f"Breakout signals: {sum(1 for m in markers if 'BUY' in m['text'])}"
         return {
             "strategy_name": "donchian_breakout",
             "markers": markers,
@@ -373,7 +393,7 @@ class DonchianBreakoutStrategy:
 
 def run_ma_workbench(context: "StrategyContext") -> "StrategyRunResult":
     if StrategyContext is None or StrategyRunResult is None:
-        raise RuntimeError("策略运行环境不可用")
+        raise RuntimeError("Strategy runtime not available.")
     params = context.params or {}
 
     def _get_int(key: str, default: int) -> int:
@@ -392,7 +412,7 @@ def run_ma_workbench(context: "StrategyContext") -> "StrategyRunResult":
 
 def run_rsi_workbench(context: "StrategyContext") -> "StrategyRunResult":
     if StrategyContext is None or StrategyRunResult is None:
-        raise RuntimeError("策略运行环境不可用")
+        raise RuntimeError("Strategy runtime not available.")
     params = context.params or {}
 
     def _get_int(key: str, default: int) -> int:
@@ -418,7 +438,7 @@ def run_rsi_workbench(context: "StrategyContext") -> "StrategyRunResult":
 
 def run_donchian_workbench(context: "StrategyContext") -> "StrategyRunResult":
     if StrategyContext is None or StrategyRunResult is None:
-        raise RuntimeError("策略运行环境不可用")
+        raise RuntimeError("Strategy runtime not available.")
     params = context.params or {}
 
     def _get_int(key: str, default: int) -> int:

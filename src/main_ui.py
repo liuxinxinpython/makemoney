@@ -41,9 +41,11 @@ except Exception:
     segment_trend_and_consolidation = None
 
 try:
-    from .data.workers import ImportWorker  # type: ignore[import-not-found]
+    from .data.workers import ImportWorker, TushareSyncWorker, TushareTestWorker  # type: ignore[import-not-found]
 except Exception:
     ImportWorker = None
+    TushareSyncWorker = None
+    TushareTestWorker = None
 
 try:
     from .displays import DisplayManager
@@ -151,6 +153,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.data_db_value_label: Optional[QtWidgets.QLabel] = None
         self.import_status_label: Optional[QtWidgets.QLabel] = None
         self.data_page_progress: Optional[QtWidgets.QProgressBar] = None
+        self.tushare_token_input: Optional[QtWidgets.QLineEdit] = None
+        self.tushare_status_label: Optional[QtWidgets.QLabel] = None
+        self.tushare_start_date: Optional[QtWidgets.QDateEdit] = None
+        self.tushare_end_date: Optional[QtWidgets.QDateEdit] = None
+        self.tushare_token_path: Path = Path.home() / ".tushare_token"
+        self.tushare_token: Optional[str] = self._load_tushare_token()
+        self._tushare_thread: Optional[QtCore.QThread] = None
+        self._tushare_worker: Optional[QtCore.QObject] = None
+        self._tushare_test_thread: Optional[QtCore.QThread] = None
+        self._tushare_test_worker: Optional[QtCore.QObject] = None
         self.strategy_sidebar: Optional[QtWidgets.QWidget] = None
         self.strategy_panel_container: Optional[QtWidgets.QWidget] = None
         self.strategy_panel_layout: Optional[QtWidgets.QVBoxLayout] = None
@@ -214,7 +226,8 @@ class MainWindow(QtWidgets.QMainWindow):
             action_import_replace=self.action_import_replace,
         )
         if self.kline_controller:
-            self.kline_controller.load_initial_chart()
+            # Delay initial data load to avoid blocking UI construction
+            QtCore.QTimer.singleShot(0, self.kline_controller.load_initial_chart)
 
     # Insert MainWindow methods (copied from tradingview_kline.py)
     def _create_actions(self) -> None:
@@ -367,6 +380,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.data_dir_value_label.setText(self._format_path(self.data_dir))
         if self.data_db_value_label is not None:
             self.data_db_value_label.setText(self._format_path(self.db_path))
+        if self.tushare_token_input is not None and self.tushare_token:
+            self.tushare_token_input.setText(self.tushare_token)
+        if self.tushare_status_label is not None:
+            self.tushare_status_label.setText("等待同步")
 
     def _set_import_status(self, text: str) -> None:
         if self.import_status_label is not None:
@@ -571,4 +588,180 @@ class MainWindow(QtWidgets.QMainWindow):
     def refresh_symbols_async(self, select: Optional[str] = None) -> None:
         if self.kline_controller:
             self.kline_controller.refresh_symbols_async(select)
+
+    # --- Tushare sync helpers --------------------------------------------
+    def _load_tushare_token(self) -> Optional[str]:
+        try:
+            text = self.tushare_token_path.read_text(encoding="utf-8").strip()
+            return text or None
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+
+    def _save_tushare_token_value(self, token: str) -> None:
+        token = token.strip()
+        if not token:
+            return
+        try:
+            self.tushare_token_path.write_text(token, encoding="utf-8")
+            self.tushare_token = token
+            self.append_log("已保存 Tushare Token")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "保存失败", f"写入 token 文件失败: {exc}")
+
+    def save_tushare_token(self) -> None:
+        if self.tushare_token_input:
+            token = self.tushare_token_input.text()
+            if token:
+                self._save_tushare_token_value(token)
+                self._set_import_status("已保存 Tushare Token")
+
+    def start_tushare_update(self) -> None:
+        if TushareSyncWorker is None:
+            QtWidgets.QMessageBox.warning(self, "缺少依赖", "未找到 TushareSyncWorker，请检查依赖")
+            return
+        token = ""
+        if self.tushare_token_input:
+            token = self.tushare_token_input.text().strip()
+        if not token:
+            token = self.tushare_token or ""
+        if not token:
+            QtWidgets.QMessageBox.information(self, "缺少 Token", "请先粘贴 Tushare Token")
+            return
+        self.tushare_token = token
+        if not self.db_path:
+            QtWidgets.QMessageBox.warning(self, "缺少数据库", "未设置数据库路径")
+            return
+        start_date = None
+        end_date = None
+        if self.tushare_start_date:
+            start_date = self.tushare_start_date.date().toString("yyyyMMdd")
+        if self.tushare_end_date:
+            end_date = self.tushare_end_date.date().toString("yyyyMMdd")
+        if self.data_page_progress:
+            self.data_page_progress.setRange(0, 0)
+            self.data_page_progress.setVisible(True)
+        if self.import_status_label:
+            self.import_status_label.setText("Tushare 更新中...")
+        if self.tushare_status_label:
+            self.tushare_status_label.setText("正在同步日线...")
+
+        worker = TushareSyncWorker(
+            db_path=self.db_path,
+            token=token,
+            lookback_days=180,
+            mode="by_date",
+            start_date=start_date,
+            end_date=end_date,
+        )
+        thread = QtCore.QThread(self)
+        self._tushare_thread = thread
+        self._tushare_worker = worker
+        worker.moveToThread(thread)
+        worker.progress.connect(lambda msg: self.append_log(f"[Tushare] {msg}"))
+        worker.progress_count.connect(self._on_tushare_progress)
+        worker.finished.connect(self._on_tushare_finished)
+        worker.failed.connect(self._on_tushare_failed)
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def start_tushare_test(self) -> None:
+        if TushareTestWorker is None:
+            QtWidgets.QMessageBox.warning(self, "缺少依赖", "未找到 TushareTestWorker，请检查依赖")
+            return
+        token = ""
+        if self.tushare_token_input:
+            token = self.tushare_token_input.text().strip()
+        if token:
+            self.tushare_token = token  # 优先使用输入框
+        if not token and self.tushare_token:
+            token = self.tushare_token
+        if not token:
+            QtWidgets.QMessageBox.information(self, "缺少 Token", "请先粘贴 Tushare Token")
+            return
+        if self.data_page_progress:
+            self.data_page_progress.setRange(0, 0)
+            self.data_page_progress.setVisible(True)
+        if self.tushare_status_label:
+            self.tushare_status_label.setText("测试中...")
+
+        worker = TushareTestWorker(token=token)
+        thread = QtCore.QThread(self)
+        self._tushare_test_thread = thread
+        self._tushare_test_worker = worker
+        worker.moveToThread(thread)
+        worker.finished.connect(self._on_tushare_test_finished)
+        worker.failed.connect(self._on_tushare_test_failed)
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_tushare_finished(self, stats: object) -> None:
+        if self.data_page_progress:
+            self.data_page_progress.setVisible(False)
+            self.data_page_progress.setRange(0, 1)
+            self.data_page_progress.setValue(0)
+        summary = getattr(stats, "__dict__", {}) if hasattr(stats, "__dict__") else {}
+        success = summary.get("succeeded", "?")
+        failed = summary.get("failed", 0)
+        skipped = summary.get("skipped", 0)
+        self.append_log(f"[Tushare] 完成，成功 {success}，失败 {failed}，跳过 {skipped}")
+        if self.import_status_label:
+            self.import_status_label.setText("Tushare 更新完成")
+        if self.tushare_status_label:
+            self.tushare_status_label.setText(f"完成：成功 {success}，失败 {failed}，跳过 {skipped}")
+        # 刷新标的列表，让行情页同步最新表
+        self.refresh_symbols_async()
+
+    def _on_tushare_failed(self, message: str) -> None:
+        if self.data_page_progress:
+            self.data_page_progress.setVisible(False)
+            self.data_page_progress.setRange(0, 1)
+            self.data_page_progress.setValue(0)
+        self.append_log(f"[Tushare] 失败: {message}", force_show=True)
+        QtWidgets.QMessageBox.critical(self, "Tushare 同步失败", message)
+        if self.import_status_label:
+            self.import_status_label.setText("Tushare 更新失败")
+        if self.tushare_status_label:
+            self.tushare_status_label.setText("同步失败")
+
+    def _on_tushare_progress(self, current: int, total: int) -> None:
+        if not self.data_page_progress:
+            return
+        self.data_page_progress.setVisible(True)
+        if total <= 0:
+            self.data_page_progress.setRange(0, 0)
+            return
+        self.data_page_progress.setRange(0, total)
+        self.data_page_progress.setValue(max(0, min(current, total)))
+
+    def _on_tushare_test_finished(self, message: str) -> None:
+        if self.data_page_progress:
+            self.data_page_progress.setVisible(False)
+            self.data_page_progress.setRange(0, 1)
+            self.data_page_progress.setValue(0)
+        self.append_log(f"[Tushare测试] {message}", force_show=True)
+        QtWidgets.QMessageBox.information(self, "Tushare 测试", message)
+        if self.tushare_status_label:
+            self.tushare_status_label.setText("测试通过")
+
+    def _on_tushare_test_failed(self, message: str) -> None:
+        if self.data_page_progress:
+            self.data_page_progress.setVisible(False)
+            self.data_page_progress.setRange(0, 1)
+            self.data_page_progress.setValue(0)
+        self.append_log(f"[Tushare测试] {message}", force_show=True)
+        QtWidgets.QMessageBox.warning(self, "Tushare 测试失败", message)
+        if self.tushare_status_label:
+            self.tushare_status_label.setText("测试失败")
 # End of main_ui.py
