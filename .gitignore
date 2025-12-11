@@ -116,6 +116,8 @@ dmypy.json
 # Database files
 *.db
 src/data/a_share_daily.db
+*.db-shm
+*.db-wal
 
 # IDE
 .vscode/
