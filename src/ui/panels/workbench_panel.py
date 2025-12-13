@@ -44,6 +44,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         preview_handler: Callable[[str, Dict[str, object]], Optional[StrategyRunResult]],
         chart_focus_handler: Callable[[], None],
         load_symbol_handler: Callable[[str], None],
+        render_markers_handler: Optional[Callable[[str, List[Dict[str, Any]], List[Dict[str, Any]]], None]] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -55,6 +56,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.preview_handler = preview_handler
         self.chart_focus_handler = chart_focus_handler
         self.load_symbol_handler = load_symbol_handler
+        self.render_markers_handler = render_markers_handler
 
         self.current_strategy_key: Optional[str] = None
         self.param_widgets: Dict[str, QtWidgets.QWidget] = {}
@@ -373,6 +375,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.backtest_table.setAlternatingRowColors(True)
         header = self.backtest_table.horizontalHeader()
         header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.backtest_table.doubleClicked.connect(self._on_backtest_row_activated)
         layout.addWidget(self.backtest_table, 1)
 
         self.backtest_log = QtWidgets.QTextEdit(tab)
@@ -568,7 +571,14 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         try:
             result = self.preview_handler(definition.key, params)
         except Exception as exc:  # pragma: no cover
-            QtWidgets.QMessageBox.critical(self, '策略运行失败', str(exc))
+            message = str(exc)
+            # 在状态栏显示完整错误，便于复制；同时尝试写入剪贴板
+            self.preview_status.setText(f"预览失败: {message}")
+            try:
+                QtWidgets.QApplication.clipboard().setText(message)
+            except Exception:
+                pass
+            QtWidgets.QMessageBox.critical(self, '策略运行失败', f"{message}\n\n已写入状态栏，可直接复制。")
             return
         if result:
             self.preview_status.setText(result.status_message or '已生成标记')
@@ -664,6 +674,54 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             self.backtest_table.setItem(row, 5, exit_price_item)
             self.backtest_table.setItem(row, 6, return_item)
             self.backtest_table.setItem(row, 7, pnl_item)
+
+    def _on_backtest_row_activated(self, index: QtCore.QModelIndex) -> None:
+        row = index.row()
+        if not (0 <= row < len(self.backtest_results)):
+            return
+        trade = self.backtest_results[row]
+        symbol = str(trade.get('symbol') or '').strip()
+        if not symbol:
+            return
+        try:
+            self.load_symbol_handler(symbol)
+        except Exception:
+            pass
+        markers: List[Dict[str, Any]] = []
+        entry_date = trade.get('entry_date') or trade.get('entryTime')
+        exit_date = trade.get('exit_date') or trade.get('exitTime')
+        entry_price = trade.get('entry_price')
+        exit_price = trade.get('exit_price')
+        if entry_date:
+            markers.append({
+                'id': f'bt_entry_{row}',
+                'time': entry_date,
+                'position': 'belowBar',
+                'color': '#10b981',
+                'shape': 'triangle',
+                'text': f'回测买入 {entry_price:.2f}' if isinstance(entry_price, (int, float)) else '回测买入',
+                'price': entry_price,
+            })
+        if exit_date:
+            markers.append({
+                'id': f'bt_exit_{row}',
+                'time': exit_date,
+                'position': 'aboveBar',
+                'color': '#ef4444',
+                'shape': 'triangle',
+                'text': f'回测卖出 {exit_price:.2f}' if isinstance(exit_price, (int, float)) else '回测卖出',
+                'price': exit_price,
+            })
+        if self.render_markers_handler:
+            try:
+                self.render_markers_handler(symbol, markers, [])
+            except Exception:
+                pass
+        if self.chart_focus_handler:
+            try:
+                self.chart_focus_handler()
+            except Exception:
+                pass
 
     def update_selected_symbol(self, symbol: Optional[str]) -> None:
         self._current_selected_symbol = symbol

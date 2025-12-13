@@ -54,7 +54,7 @@ except Exception:
     CandleLoadWorker = None
 
 try:
-    from src.rendering import render_html, build_mock_candles, load_maotai_candles  # type: ignore[import-not-found]
+    from src.rendering import render_html, build_mock_candles, load_maotai_candles  # type: ignore[import-not-found]tradingview_template.htm
 except Exception:
     render_html = None
     build_mock_candles = None

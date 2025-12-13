@@ -51,23 +51,23 @@ def augment_markers_with_trade_signals(
         return markers
 
     enriched = list(markers)
-    buy_times: Set[Any] = {
-        m.get("time")
-        for m in markers
-        if isinstance(m.get("text"), str) and "BUY" in m["text"].upper()
-    }
-    sell_times: Set[Any] = {
-        m.get("time")
-        for m in markers
-        if isinstance(m.get("text"), str) and "SELL" in m["text"].upper()
-    }
+    def _is_buy(text: str) -> bool:
+        upper = text.upper()
+        return "BUY" in upper or "买" in text
+
+    def _is_sell(text: str) -> bool:
+        upper = text.upper()
+        return "SELL" in upper or "卖" in text
+
+    buy_times: Set[Any] = {m.get("time") for m in markers if isinstance(m.get("text"), str) and _is_buy(m["text"])}
+    sell_times: Set[Any] = {m.get("time") for m in markers if isinstance(m.get("text"), str) and _is_sell(m["text"])}
 
     for idx, trade in enumerate(trades):
         entry_time = trade.get("entry_time") or trade.get("entryTime")
         entry_price = _safe_float(trade.get("entry_price") or trade.get("entryPrice"))
         entry_label = trade.get("entry_reason") or trade.get("entryReason")
         if entry_time and entry_time not in buy_times:
-            text = entry_label or (f"BUY {entry_price:.2f}" if entry_price is not None else "BUY")
+            text = entry_label or (f"买入 {entry_price:.2f}" if entry_price is not None else "买入")
             enriched.append(
                 {
                     "id": f"{strategy_key}_buy_{idx}",
@@ -84,7 +84,7 @@ def augment_markers_with_trade_signals(
         exit_price = _safe_float(trade.get("exit_price") or trade.get("exitPrice"))
         exit_label = trade.get("exit_reason") or trade.get("exitReason")
         if exit_time and exit_time not in sell_times:
-            text = exit_label or (f"SELL {exit_price:.2f}" if exit_price is not None else "SELL")
+            text = exit_label or (f"卖出 {exit_price:.2f}" if exit_price is not None else "卖出")
             enriched.append(
                 {
                     "id": f"{strategy_key}_sell_{idx}",

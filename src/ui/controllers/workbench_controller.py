@@ -191,6 +191,7 @@ class StrategyWorkbenchController(QtCore.QObject):
                 preview_handler=self._run_workbench_preview,
                 chart_focus_handler=self.kline_controller.focus_chart,
                 load_symbol_handler=self.kline_controller.select_symbol,
+                render_markers_handler=self._render_custom_markers,
                 parent=parent,
             )
         else:
@@ -250,6 +251,17 @@ class StrategyWorkbenchController(QtCore.QObject):
                 self.status_bar.showMessage(result.status_message)
             self._show_echarts_preview(strategy_key, result)
         return result
+
+    def _render_custom_markers(
+        self,
+        table: str,
+        markers: List[Dict[str, Any]],
+        overlays: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        if not self.kline_controller or not table:
+            return
+        self.kline_controller.set_markers(list(markers), list(overlays or []))
+        self.kline_controller.render_from_database(table, list(markers), list(overlays or []))
 
     def _ensure_echarts_dialog(self) -> Optional[EChartsPreviewDialog]:
         if EChartsPreviewDialog is None or render_echarts_preview is None:
