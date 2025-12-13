@@ -118,6 +118,9 @@ dmypy.json
 src/data/a_share_daily.db
 *.db-shm
 *.db-wal
+# Local DB symbol metadata
+*.db.symbols.json
+*.db.*
 
 # IDE
 .vscode/
