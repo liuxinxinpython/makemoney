@@ -84,15 +84,44 @@
       };
     });
 
-    const zoneRects = (dataOverlays || []).map(range => ({
-      label: range.label || '',
-      start: range.startTime || range.start || range.from,
-      end: range.endTime || range.end || range.to,
-      top: range.top ?? range.max ?? range.upper ?? null,
-      bottom: range.bottom ?? range.min ?? range.lower ?? null,
-      color: range.color || 'rgba(255, 215, 0, 0.15)',
-      borderColor: (range.color && range.color.replace('0.15', '0.65')) || '#fcd34d',
-    }));
+    const zoneRects = (dataOverlays || [])
+      .filter(range => (range.kind || '').toLowerCase() !== 'major_wave' && (range.kind || '').toLowerCase() !== 'retest_link' && (range.kind || '').toLowerCase() !== 'line')
+      .map(range => ({
+        label: range.label || '',
+        start: range.startTime || range.start || range.from,
+        end: range.endTime || range.end || range.to,
+        top: range.top ?? range.max ?? range.upper ?? null,
+        bottom: range.bottom ?? range.min ?? range.lower ?? null,
+        color: range.color || 'rgba(255, 215, 0, 0.15)',
+        borderColor: (range.color && range.color.replace('0.15', '0.65')) || '#fcd34d',
+      }));
+
+    const lineOverlays = (dataOverlays || [])
+      .filter(range => {
+        const kind = (range.kind || '').toLowerCase();
+        return kind === 'major_wave' || kind === 'retest_link' || kind === 'line';
+      })
+      .map((range, idx) => {
+        const start = range.startTime || range.start || range.from;
+        const end = range.endTime || range.end || range.to;
+        const sp = range.startPrice ?? range.start_price ?? range.price ?? range.top ?? range.high ?? range.upper;
+        const ep = range.endPrice ?? range.end_price ?? range.bottom ?? range.low ?? range.lower ?? sp;
+        const color = range.color || (String(range.kind).toLowerCase() === 'major_wave' ? '#f59e0b' : '#94a3b8');
+        const width = typeof range.lineWidth === 'number' ? range.lineWidth : 2;
+        return {
+          coords: [
+            [start, sp],
+            [end, ep],
+          ],
+          lineStyle: {
+            color,
+            width,
+            type: range.lineStyle === 'dashed' ? 'dashed' : range.lineStyle === 'dotted' ? 'dotted' : 'solid',
+            opacity: 0.9,
+          },
+          name: range.label || `${range.kind || 'line'}#${idx + 1}`,
+        };
+      });
 
     const strokeLines = (dataStrokes || []).map(stroke => ({
       coords: [
@@ -246,6 +275,18 @@
             color: '#f8fafc',
           },
           z: 3,
+        },
+        {
+          name: '主波段/回踩线',
+          type: 'lines',
+          coordinateSystem: 'cartesian2d',
+          polyline: false,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: lineOverlays,
+          lineStyle: { width: 2 },
+          symbol: 'none',
+          z: 2,
         },
         {
           name: '成交量',
