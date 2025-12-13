@@ -82,10 +82,8 @@ def load_candles_from_sqlite(
         order_clause = "ORDER BY date DESC"
         limit_clause = f" LIMIT {int(max_rows)}"
 
-    query = (
-        "SELECT date, open, high, low, close, volume, name, symbol FROM "
-        f'"{escaped_table}" {order_clause}{limit_clause}'
-    )
+    # 读取全列，后续择优取需要的字段；避免因可选列（如涨跌幅）遗漏
+    query = f'SELECT * FROM "{escaped_table}" {order_clause}{limit_clause}'
 
     try:
         with sqlite3.connect(db_path) as conn:
@@ -121,6 +119,17 @@ def load_candles_from_sqlite(
         if None in (open_, high, low, close):
             continue
 
+        pct_val: Optional[float] = None
+        for c in ("pct_chg", "change_pct", "chg", "pct"):
+            if c in df.columns:
+                val = row.get(c)
+                if val is not None and not pd.isna(val):
+                    try:
+                        pct_val = float(val)
+                        break
+                    except Exception:
+                        pct_val = None
+
         volume_raw = row.get("volume")
         volume_value = float(volume_raw) if volume_raw is not None and not pd.isna(volume_raw) else 0.0
         volume_wan = round(volume_value / 1e4, 2)
@@ -134,15 +143,16 @@ def load_candles_from_sqlite(
             if symbol_value is not None and not pd.isna(symbol_value):
                 instrument_symbol = str(symbol_value).strip().upper()
 
-        candles.append(
-            {
-                "time": date_str,
-                "open": round(open_, 2),
-                "high": round(high, 2),
-                "low": round(low, 2),
-                "close": round(close, 2),
-            }
-        )
+        candle = {
+            "time": date_str,
+            "open": round(open_, 2),
+            "high": round(high, 2),
+            "low": round(low, 2),
+            "close": round(close, 2),
+        }
+        if pct_val is not None:
+            candle["pct_chg"] = round(pct_val, 2)
+        candles.append(candle)
         volumes.append(
             {
                 "time": date_str,

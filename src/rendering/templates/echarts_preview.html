@@ -155,6 +155,34 @@
         trigger: 'axis',
         axisPointer: { type: 'cross' },
         backgroundColor: 'rgba(15,23,42,0.9)',
+        formatter: (params) => {
+          if (!params || !params.length) return '';
+          const idx = params[0].dataIndex;
+          const candle = dataCandles[idx] || {};
+          const open = candle.open ?? candle.Open ?? null;
+          const high = candle.high ?? candle.High ?? null;
+          const low = candle.low ?? candle.Low ?? null;
+          const close = candle.close ?? candle.Close ?? null;
+          const prev = dataCandles[idx - 1] || {};
+          const prevClose = prev.close ?? prev.Close ?? null;
+          let pct = null;
+          if (prevClose !== null && prevClose !== 0 && close != null) {
+            pct = ((close - prevClose) / prevClose) * 100;
+          } else {
+            const pctField = candle.pct_chg ?? candle.pct ?? candle.change_pct ?? candle.chg ?? null;
+            if (pctField !== null && pctField !== undefined) {
+              pct = Number(pctField);
+            }
+          }
+          const lines = [];
+          lines.push(`时间：${params[0].axisValue}`);
+          if (open != null) lines.push(`开盘：${open}`);
+          if (high != null) lines.push(`最高：${high}`);
+          if (low != null) lines.push(`最低：${low}`);
+          if (close != null) lines.push(`收盘：${close}`);
+          if (pct != null && Number.isFinite(pct)) lines.push(`涨跌：${Number(pct).toFixed(2)}%`);
+          return lines.join('<br/>');
+        },
       },
       axisPointer: { link: [{ xAxisIndex: 'all' }], snap: true },
       grid: [

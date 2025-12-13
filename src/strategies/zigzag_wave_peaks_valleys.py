@@ -67,11 +67,11 @@ if StrategyParameter is not None:
             description="回踩买入的硬止损，按波谷收盘向下百分比计算。",
         ),
         StrategyParameter(
-            key="take_profit_r",
-            label="止盈 (R 倍)",
+            key="drawdown_take_profit_pct",
+            label="回撤止盈 (%)",
             type="number",
-            default=2.0,
-            description="按止损距离的 R 倍止盈；设为 0 关闭。",
+            default=7.0,
+            description="买入后创出高点再回撤超过该百分比即止盈卖出；设为 0 关闭。",
         ),
         StrategyParameter(
             key="long_upper_shadow_pct",
@@ -127,7 +127,7 @@ class ZigZagWavePeaksValleysStrategy:
         pivot_depth: int = 1,
         retest_tolerance_pct: float = 1.5,
         stop_loss_pct: float = 2.0,
-        take_profit_r: float = 2.0,
+        drawdown_take_profit_pct: float = 7.0,
         long_upper_shadow_pct: float = 3.0,
         confirm_break_level: bool = True,
         confirm_bullish_candle: bool = True,
@@ -142,7 +142,7 @@ class ZigZagWavePeaksValleysStrategy:
         self.pivot_depth = max(1, int(pivot_depth))
         self.retest_tolerance = max(0.0, float(retest_tolerance_pct) / 100.0)
         self.stop_loss_pct = max(0.0005, float(stop_loss_pct) / 100.0)
-        self.take_profit_r = max(0.0, float(take_profit_r))
+        self.drawdown_take_profit = max(0.0, float(drawdown_take_profit_pct) / 100.0)
         self.long_upper_shadow_pct = max(0.0, float(long_upper_shadow_pct) / 100.0)
         self.confirm_break_level = bool(confirm_break_level)
         self.confirm_bullish_candle = bool(confirm_bullish_candle)
@@ -164,14 +164,15 @@ class ZigZagWavePeaksValleysStrategy:
                 {"index": len(candles) - 1, "type": "peak"},
             ]
 
-        # 暂停买点与相关标记，仅展示波峰波谷和主波段
-        trades: List[Dict[str, Any]] = []
+        # 回踩买点：按主波段波谷为锚点，仅首个回踩触发
+        trades = self._detect_valley_retests(candles, pivots, major_pivots)
         pivot_markers = self._pivot_markers(pivots, candles) if pivots else []
-        markers = pivot_markers
+        trade_markers = self._trade_markers(trades) if trades else []
+        markers = pivot_markers + trade_markers
         overlays: List[Dict[str, Any]] = []
-        open_trades = 0
-        status_message = "仅显示波峰波谷与主波段"
-        strokes: List[Dict[str, Any]] = []
+        open_trades = sum(1 for t in trades if not t.get("exit_time"))
+        status_message = f"回踩交易 {len(trades)}，持仓中 {open_trades}"
+        strokes = self._retest_strokes(trades, candles)
         major_wave_lines = self._major_wave_strokes(candles, major_pivots, pivots)
         overlays = strokes + major_wave_lines
         status_message = f"{status_message}；主波段线 {len(major_wave_lines)}"
@@ -370,221 +371,149 @@ class ZigZagWavePeaksValleysStrategy:
         pivots: List[Dict[str, Any]],
         major_pivots: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Find pullbacks that retest the last confirmed valley without peeking into future bars.
-
-        Rules (single forward pass):
-        1) Need a confirmed valley followed by a confirmed peak (zigzag already confirmed by past bars).
-        2) After that peak, if price pulls back into the valley zone (within tolerance, not breaking stop)
-           we open a long at close.
-        3) Manage with hard stop below valley; take-profit at R multiple if configured.
-        4) If bar breaks stop first, abandon setup; if target hits, exit; otherwise hold until end.
-        """
+        """仅按主波段波谷为锚点，记录首个回踩买点（跨主波段，后续不再重复）。"""
         if not candles or len(major_pivots) < 2 or self.retest_tolerance <= 0:
             return []
 
         trades: List[Dict[str, Any]] = []
         tolerance = self.retest_tolerance
         stop_pct = self.stop_loss_pct
-        take_profit_r = self.take_profit_r
         upper_shadow_pct = self.long_upper_shadow_pct
+        drawdown_take_profit = self.drawdown_take_profit
 
-        def _iter_major_waves() -> List[Tuple[int, int, int]]:
-            """
-            主波段定义：大级别 ZigZag 相邻的 valley→peak 组成一段上升主波段。
-            结束位置：该 peak 之后出现的第一个大级别 valley（如果没有，则至末尾）。
-            """
-            windows: List[Tuple[int, int, int]] = []
-            use_pivots = major_pivots if len(major_pivots) >= 2 else pivots
-            for i in range(len(use_pivots) - 1):
-                first = use_pivots[i]
-                second = use_pivots[i + 1]
-                if first["type"] != "valley" or second["type"] != "peak":
-                    continue
-                valley_idx = first["index"]
-                peak_idx = second["index"]
-                if valley_idx >= peak_idx:
-                    continue
-                wave_end = len(candles) - 1
-                for j in range(i + 2, len(use_pivots)):
-                    if use_pivots[j]["type"] == "valley":
-                        wave_end = use_pivots[j]["index"]
-                        break
-                if wave_end <= peak_idx:
-                    continue
-                windows.append((valley_idx, peak_idx, wave_end))
-            return windows
+        use_pivots = major_pivots if len(major_pivots) >= 2 else pivots
+        for i in range(len(use_pivots) - 1):
+            first = use_pivots[i]
+            if first["type"] != "valley":
+                continue
+            # 需要后续有峰确认
+            peak_idx = None
+            for j in range(i + 1, len(use_pivots)):
+                if use_pivots[j]["type"] == "peak":
+                    peak_idx = use_pivots[j]["index"]
+                    break
+            if peak_idx is None:
+                continue
 
-        for valley_idx, peak_idx, window_end in _iter_major_waves():
-            anchors: List[Tuple[float, int, Any, str]] = []
+            valley_idx = first["index"]
             valley_price = float(candles[valley_idx].get("low", candles[valley_idx].get("close", 0)) or 0)
             valley_time = candles[valley_idx].get("time", valley_idx)
-            if valley_price > 0:
-                anchors.append((valley_price, valley_idx, valley_time, "valley"))
-            # 父浪内最近的次级波谷（抬升低点也可作为支撑）
-            minor_valleys = [
-                p for p in pivots if p.get("type") == "valley" and valley_idx < p["index"] <= window_end
-            ]
-            if minor_valleys:
-                last_minor = minor_valleys[-1]
-                mv_idx = last_minor["index"]
-                mv_price = float(candles[mv_idx].get("low", candles[mv_idx].get("close", 0)) or 0)
-                mv_time = candles[mv_idx].get("time", mv_idx)
-                if mv_price > 0:
-                    anchors.append((mv_price, mv_idx, mv_time, "minor_valley"))
-            sup_start = valley_idx
-            sup_end = min(window_end, valley_idx + self.support_lookback_bars)
-            support = self._find_support_zone(candles, sup_start, sup_end)
-            if support is not None:
-                sup_price, sup_idx, sup_time = support
-                anchors.append((sup_price, sup_idx, sup_time, "support"))
+            if valley_price <= 0:
+                continue
 
-            for base_price, base_idx, base_time, base_kind in anchors:
-                entry_zone = base_price * (1.0 + tolerance)
-                stop_price = base_price * (1.0 - stop_pct)
-                retest_index: Optional[int] = None
-                retest_time: Optional[Any] = None
-                retest_price: Optional[float] = None
-                retest_high: Optional[float] = None
-                active_entry: Optional[Dict[str, Any]] = None
-                trade_recorded = False
+            entry_zone = valley_price * (1.0 + tolerance)
+            stop_price = valley_price * (1.0 - stop_pct)
+            overshoot_floor = valley_price * 0.95  # 允许最多跌破波谷 5% 后拉回
+            retest_index: Optional[int] = None
+            retest_time: Optional[Any] = None
+            retest_price: Optional[float] = None
+            retest_high: Optional[float] = None
+            active_entry: Optional[Dict[str, Any]] = None
 
-                for idx in range(peak_idx + 1, window_end + 1):
-                    candle = candles[idx]
-                    close_price = float(candle.get("close", 0) or 0)
-                    low_price = float(candle.get("low", close_price) or 0)
-                    high_price = float(candle.get("high", close_price) or 0)
-                    time_value = candle.get("time", idx)
-                    prev_close = (
-                        float(candles[idx - 1].get("close", close_price) or close_price) if idx > 0 else close_price
-                    )
-                    prev_high = (
-                        float(candles[idx - 1].get("high", prev_close) or prev_close) if idx > 0 else close_price
-                    )
-                    open_price = float(candle.get("open", close_price) or close_price)
+            for idx in range(peak_idx + 1, len(candles)):
+                candle = candles[idx]
+                close_price = float(candle.get("close", 0) or 0)
+                low_price = float(candle.get("low", close_price) or 0)
+                high_price = float(candle.get("high", close_price) or 0)
+                open_price = float(candle.get("open", close_price) or close_price)
+                time_value = candle.get("time", idx)
+                prev_close = float(candles[idx - 1].get("close", close_price) or close_price) if idx > 0 else close_price
+                prev_high = float(candles[idx - 1].get("high", prev_close) or prev_close) if idx > 0 else close_price
 
-                    if active_entry is None:
-                        if low_price <= stop_price:
-                            retest_index = None
-                            retest_time = None
-                            retest_price = None
-                            retest_high = None
-                            continue
-                        # 回踩到位用当日最低价判断，必须贴近波谷低点（容差区内）
-                        if low_price <= entry_zone and low_price > stop_price:
-                            retest_index = idx
-                            retest_time = time_value
-                            retest_price = low_price
-                            retest_high = high_price
-                            continue
-                        # 反转确认：阳线/吞没，且突破回踩K线的高点
+                if active_entry is None:
+                    # 超过容许跌破幅度则作废
+                    if low_price < overshoot_floor:
+                        break
+                    # 先记录首次触及回踩区
+                    if retest_index is None and low_price <= entry_zone and low_price > stop_price:
+                        retest_index = idx
+                        retest_time = time_value
+                        retest_price = low_price
+                        retest_high = high_price
+                        continue
+                    # 容许跌破止损但不超过 5% 后拉回的情况，仍视作回踩
+                    if retest_index is None and stop_price >= low_price >= overshoot_floor:
+                        retest_index = idx
+                        retest_time = time_value
+                        retest_price = low_price
+                        retest_high = high_price
+                        continue
+                    # 回踩后需等待至少2根上升K线，且相对回踩价涨幅>=3%才买入
+                    if retest_index is not None and idx > retest_index:
+                        rise_ok = valley_price > 0 and ((close_price - valley_price) / valley_price) >= 0.03
                         bullish_ok = (not self.confirm_bullish_candle) or (close_price > open_price)
-                        level_to_break = retest_high if retest_high is not None else (retest_price if retest_price is not None else prev_high)
-                        break_ok = (not self.confirm_break_level) or (
-                            level_to_break is not None and high_price > level_to_break and close_price > level_to_break
-                        )
-                        confirm_by_break = (
-                            retest_index is not None
-                            and idx >= retest_index
-                            and close_price > stop_price
-                            and close_price > prev_close
-                            and bullish_ok
-                            and break_ok
-                        )
-                        # 额外的“站回锚点”宽松确认：回踩后若收盘重新站上锚点且未触发止损，也视为转向
-                        confirm_by_reclaim = (
-                            retest_index is not None
-                            and idx > retest_index
-                            and close_price >= base_price
-                            and close_price > stop_price
-                            and close_price > prev_close
-                            and bullish_ok
-                        )
-                        if confirm_by_break or confirm_by_reclaim:
-                            risk_perc = (close_price - stop_price) / close_price if close_price else stop_pct
-                            target_price = (
-                                close_price * (1.0 + take_profit_r * risk_perc) if take_profit_r > 0 else None
-                            )
+                        if rise_ok and close_price > stop_price and bullish_ok:
+                            # 止损放在回踩点（再跌破回踩点就止损）
+                            entry_stop = retest_price if retest_price is not None else stop_price
+                            risk_perc = (close_price - entry_stop) / close_price if close_price else stop_pct
                             active_entry = {
                                 "entry_time": time_value,
                                 "entry_index": idx,
                                 "entry_price": close_price,
-                                "entry_reason": "回踩买入",
-                                "stop_price": stop_price,
-                                "target_price": target_price,
-                                "anchor_price": base_price,
-                                "anchor_time": base_time,
-                                "anchor_index": base_idx,
-                                "anchor_kind": base_kind,
+                                "entry_reason": "买入",
+                                "stop_price": entry_stop,
+                                "anchor_price": valley_price,
+                                "anchor_time": valley_time,
+                                "anchor_index": valley_idx,
+                                "anchor_kind": "valley",
                                 "retest_time": retest_time,
                                 "retest_index": retest_index,
                                 "retest_price": retest_price,
                                 "retest_high": retest_high,
                             }
-                        continue
-
-                    # manage open trade
-                    if low_price <= active_entry["stop_price"]:
-                        trades.append(
-                            {
-                                **active_entry,
-                                "exit_time": time_value,
-                                "exit_index": idx,
-                                "exit_price": active_entry["stop_price"],
-                                "exit_reason": "止损",
-                            }
-                        )
-                        active_entry = None
-                        retest_index = None
-                        retest_time = None
-                        retest_price = None
-                        trade_recorded = True
-                        break
-
-                    target_price = active_entry.get("target_price")
-                    if target_price is not None and high_price >= target_price:
-                        trades.append(
-                            {
-                                **active_entry,
-                                "exit_time": time_value,
-                                "exit_index": idx,
-                                "exit_price": target_price,
-                                "exit_reason": f"止盈 {take_profit_r:.1f}R",
-                            }
-                        )
-                        active_entry = None
-                        retest_index = None
-                        retest_time = None
-                        retest_price = None
-                        trade_recorded = True
-                        break
-
-                    if upper_shadow_pct > 0:
-                        body_top = max(open_price, close_price)
-                        upper_shadow_len = max(0.0, high_price - body_top)
-                        if body_top > 0 and (upper_shadow_len / body_top) >= upper_shadow_pct:
-                            trades.append(
-                                {
-                                    **active_entry,
-                                    "exit_time": time_value,
-                                    "exit_index": idx,
-                                    "exit_price": close_price,
-                                    "exit_reason": "长上影止盈",
-                                }
-                            )
-                            active_entry = None
-                            retest_index = None
-                            retest_time = None
-                            retest_price = None
-                            trade_recorded = True
-                            break
-
-                if active_entry is not None:
-                    trades.append({**active_entry, "exit_time": None, "exit_price": None, "exit_reason": "持仓中"})
-                    trade_recorded = True
-
-                if trade_recorded:
-                    # 每个锚点只保留一笔回踩交易
+                            # 进入持仓，继续后续K线以标记卖点
                     continue
+
+                # 管理持仓
+                if low_price <= active_entry["stop_price"]:
+                    trades.append(
+                        {
+                            **active_entry,
+                            "exit_time": time_value,
+                            "exit_index": idx,
+                            "exit_price": active_entry["stop_price"],
+                            "exit_reason": "止损卖出",
+                        }
+                    )
+                    active_entry = None
+                    break
+
+                target_price = active_entry.get("target_price")
+                # 动态回撤止盈：创出高点后回撤超过配置比例则卖出
+                if drawdown_take_profit > 0:
+                    active_entry.setdefault("max_price_seen", active_entry["entry_price"])
+                    max_price_seen = max(active_entry["max_price_seen"], high_price)
+                    active_entry["max_price_seen"] = max_price_seen
+                    if max_price_seen > 0 and close_price <= max_price_seen * (1.0 - drawdown_take_profit):
+                        trades.append(
+                            {
+                                **active_entry,
+                                "exit_time": time_value,
+                                "exit_index": idx,
+                                "exit_price": close_price,
+                                "exit_reason": "回撤止盈卖出",
+                            }
+                        )
+                        active_entry = None
+                        break
+                if upper_shadow_pct > 0:
+                    body_top = max(open_price, close_price)
+                    upper_shadow_len = max(0.0, high_price - body_top)
+                    if body_top > 0 and (upper_shadow_len / body_top) >= upper_shadow_pct:
+                        trades.append(
+                            {
+                                **active_entry,
+                                "exit_time": time_value,
+                                "exit_index": idx,
+                                "exit_price": close_price,
+                                "exit_reason": "长上影止盈卖出",
+                            }
+                        )
+                        active_entry = None
+                        break
+
+            if active_entry is not None:
+                trades.append({**active_entry, "exit_time": None, "exit_price": None, "exit_reason": "持仓中"})
 
         return trades
 
@@ -641,11 +570,12 @@ class ZigZagWavePeaksValleysStrategy:
                         "position": "belowBar",
                         "color": "#0ea5e9",
                         "shape": "triangle",
-                        "text": f"回踩买入 {entry_price:.2f}" if entry_price is not None else "回踩买入",
+                        "text": f"买入 {entry_price:.2f}" if entry_price is not None else "买入",
                         "price": entry_price,
                     }
                 )
             if (exit_time is not None) or (exit_index is not None):
+                reason = trade.get("exit_reason") or "卖出"
                 markers.append(
                     {
                         "id": f"retest_exit_{idx}",
@@ -653,7 +583,7 @@ class ZigZagWavePeaksValleysStrategy:
                         "position": "aboveBar",
                         "color": "#f97316",
                         "shape": "triangle",
-                        "text": f"卖出 {exit_price:.2f}" if exit_price is not None else "卖出",
+                        "text": f"{reason} {exit_price:.2f}" if exit_price is not None else reason,
                         "price": exit_price,
                     }
                 )
@@ -794,7 +724,7 @@ def run_zigzag_workbench(context: "StrategyContext") -> "StrategyRunResult":
     pivot_depth = _get_int("pivot_depth", 1)
     retest_tolerance_pct = _get_float("retest_tolerance_pct", 1.5)
     stop_loss_pct = _get_float("stop_loss_pct", 2.0)
-    take_profit_r = _get_float("take_profit_r", 2.0)
+    drawdown_take_profit_pct = _get_float("drawdown_take_profit_pct", 7.0)
     long_upper_shadow_pct = _get_float("long_upper_shadow_pct", 3.0)
     confirm_break_level = bool(_get_int("confirm_break_level", 1))
     confirm_bullish_candle = bool(_get_int("confirm_bullish_candle", 1))
@@ -807,7 +737,7 @@ def run_zigzag_workbench(context: "StrategyContext") -> "StrategyRunResult":
         pivot_depth=pivot_depth,
         retest_tolerance_pct=retest_tolerance_pct,
         stop_loss_pct=stop_loss_pct,
-        take_profit_r=take_profit_r,
+        drawdown_take_profit_pct=drawdown_take_profit_pct,
         long_upper_shadow_pct=long_upper_shadow_pct,
         confirm_break_level=confirm_break_level,
         confirm_bullish_candle=confirm_bullish_candle,
