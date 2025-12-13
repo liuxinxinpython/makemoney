@@ -61,10 +61,10 @@ if StrategyParameter is not None:
         ),
         StrategyParameter(
             key="stop_loss_pct",
-            label="止损(相对波谷) (%)",
+            label="止损(回踩点) (%)",
             type="number",
             default=2.0,
-            description="回踩买入的硬止损，按波谷收盘向下百分比计算。",
+            description="买入后跌破回踩点该百分比止损，固定为回踩点下2%。",
         ),
         StrategyParameter(
             key="drawdown_take_profit_pct",
@@ -77,7 +77,7 @@ if StrategyParameter is not None:
             key="long_upper_shadow_pct",
             label="长上影止盈 (%)",
             type="number",
-            default=3.0,
+            default=5.0,
             description="如果当日上影长度占收盘价比例超过该值则止盈（0 关闭）。",
         ),
         StrategyParameter(
@@ -409,6 +409,16 @@ class ZigZagWavePeaksValleysStrategy:
             retest_price: Optional[float] = None
             retest_high: Optional[float] = None
             active_entry: Optional[Dict[str, Any]] = None
+            # 记录前一个大级别波谷，允许结束波谷被后续波段回踩
+            prev_anchor_price = None
+            prev_anchor_idx = None
+            prev_anchor_time = None
+            for back in range(i - 1, -1, -1):
+                if use_pivots[back]["type"] == "valley":
+                    prev_anchor_idx = use_pivots[back]["index"]
+                    prev_anchor_price = float(candles[prev_anchor_idx].get("low", candles[prev_anchor_idx].get("close", 0)) or 0)
+                    prev_anchor_time = candles[prev_anchor_idx].get("time", prev_anchor_idx)
+                    break
 
             for idx in range(peak_idx + 1, len(candles)):
                 candle = candles[idx]
@@ -431,6 +441,18 @@ class ZigZagWavePeaksValleysStrategy:
                         retest_price = low_price
                         retest_high = high_price
                         continue
+                    # 允许回踩前一个大级别波谷（结束波谷）
+                    if (
+                        prev_anchor_price is not None
+                        and retest_index is None
+                        and low_price <= prev_anchor_price * (1.0 + tolerance)
+                        and low_price > prev_anchor_price * 0.95
+                    ):
+                        retest_index = idx
+                        retest_time = time_value
+                        retest_price = low_price
+                        retest_high = high_price
+                        continue
                     # 容许跌破止损但不超过 5% 后拉回的情况，仍视作回踩
                     if retest_index is None and stop_price >= low_price >= overshoot_floor:
                         retest_index = idx
@@ -443,8 +465,9 @@ class ZigZagWavePeaksValleysStrategy:
                         rise_ok = valley_price > 0 and ((close_price - valley_price) / valley_price) >= 0.03
                         bullish_ok = (not self.confirm_bullish_candle) or (close_price > open_price)
                         if rise_ok and close_price > stop_price and bullish_ok:
-                            # 止损放在回踩点（再跌破回踩点就止损）
-                            entry_stop = retest_price if retest_price is not None else stop_price
+                            # 止损放在回踩点下方2%（再跌破回踩点2%就止损）
+                            base_for_stop = retest_price if retest_price is not None else valley_price
+                            entry_stop = base_for_stop * 0.98 if base_for_stop is not None else stop_price
                             risk_perc = (close_price - entry_stop) / close_price if close_price else stop_pct
                             active_entry = {
                                 "entry_time": time_value,
