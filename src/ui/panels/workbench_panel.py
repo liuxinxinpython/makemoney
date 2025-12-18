@@ -11,6 +11,7 @@ if __package__ in (None, ""):
     __package__ = "src.ui.panels"
 
 import csv
+import math
 from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -180,7 +181,8 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.description_label.setObjectName('StrategyDescription')
         layout.addWidget(self.description_label)
 
-        self.param_group = QtWidgets.QGroupBox('策略参数', panel)
+        # 去掉多余标题，减少视觉干扰
+        self.param_group = QtWidgets.QGroupBox('', panel)
         self.param_form = QtWidgets.QFormLayout()
         self.param_form.setLabelAlignment(QtCore.Qt.AlignRight)
         self.param_group.setLayout(self.param_form)
@@ -269,6 +271,12 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.scan_export_button.setEnabled(False)
         self.scan_export_button.clicked.connect(self._export_scan_results)
         action_row.addWidget(self.scan_export_button)
+
+        self.scan_export_image_button = QtWidgets.QPushButton('导出图片', tab)
+        self.scan_export_image_button.setProperty('class', 'ghost')
+        self.scan_export_image_button.setEnabled(False)
+        self.scan_export_image_button.clicked.connect(self._export_scan_image)
+        action_row.addWidget(self.scan_export_image_button)
 
         self.scan_copy_button = QtWidgets.QPushButton('复制代码', tab)
         self.scan_copy_button.setProperty('class', 'ghost')
@@ -926,6 +934,8 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         has_results = bool(self.scan_results)
         enabled = has_results and not self.scan_running
         self.scan_export_button.setEnabled(enabled)
+        if hasattr(self, 'scan_export_image_button'):
+            self.scan_export_image_button.setEnabled(enabled)
         self.scan_copy_button.setEnabled(enabled)
         has_selection = bool(self.scan_table.selectedItems()) if hasattr(self, 'scan_table') else False
         if hasattr(self, 'scan_add_watchlist_button'):
@@ -972,6 +982,83 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         symbols = [result.symbol for result in self.scan_results]
         QtWidgets.QApplication.clipboard().setText('\n'.join(symbols))
         self.scan_log.append('已复制选股结果到剪贴板')
+
+    def _export_scan_image(self) -> None:
+        if not self.scan_results:
+            QtWidgets.QMessageBox.information(self, '无数据', '当前没有可导出的选股结果。')
+            return
+
+        default_path = Path.home() / 'Desktop' / 'strategy_picks.png'
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            '导出选股结果图片',
+            str(default_path),
+            'PNG 图片 (*.png)'
+        )
+        if not file_path:
+            return
+
+        cols = 4
+        cell_w = 260
+        cell_h = 90
+        gap = 14
+        margin = 16
+        rows = math.ceil(len(self.scan_results) / cols)
+        width = margin * 2 + cols * cell_w + (cols - 1) * gap
+        height = margin * 2 + rows * cell_h + (rows - 1) * gap
+
+        pixmap = QtGui.QPixmap(width, height)
+        pixmap.fill(QtGui.QColor('#f8fafc'))
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+        title_font = QtGui.QFont()
+        title_font.setWeight(QtGui.QFont.DemiBold)
+        title_font.setPointSize(title_font.pointSize() + 1)
+        meta_font = QtGui.QFont()
+        meta_font.setPointSize(meta_font.pointSize() - 1)
+
+        for idx, result in enumerate(self.scan_results):
+            col = idx % cols
+            row = idx // cols
+            x = margin + col * (cell_w + gap)
+            y = margin + row * (cell_h + gap)
+            rect = QtCore.QRectF(x, y, cell_w, cell_h)
+
+            painter.setPen(QtGui.QPen(QtGui.QColor('#e2e8f0')))
+            painter.setBrush(QtGui.QColor('#ffffff'))
+            painter.drawRoundedRect(rect, 8, 8)
+
+            # Text content
+            symbol = str(result.symbol or result.table_name or '').strip()
+            name = str(result.name or '').strip()
+            header = f"{symbol}  {name}" if name else symbol
+            score = f"得分 {result.score:.2f}" if isinstance(result.score, (int, float)) else f"得分 {result.score}"
+            entry_date = f"买入日: {result.entry_date or '--'}"
+            price_val = ''
+            if isinstance(result.entry_price, (int, float)):
+                price_val = f"买入价: {result.entry_price:.2f}"
+            elif result.entry_price:
+                price_val = f"买入价: {result.entry_price}"
+
+            painter.setFont(title_font)
+            painter.setPen(QtGui.QColor('#0f172a'))
+            painter.drawText(rect.adjusted(12, 10, -12, -10), QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop, header)
+
+            painter.setFont(meta_font)
+            painter.setPen(QtGui.QColor('#475569'))
+            painter.drawText(rect.adjusted(12, 36, -12, -10), QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop, entry_date)
+            painter.drawText(rect.adjusted(12, 56, -12, -10), QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop, price_val)
+            painter.drawText(rect.adjusted(12, 10, -12, -10), QtCore.Qt.AlignRight | QtCore.Qt.AlignTop, score)
+
+        painter.end()
+
+        saved = pixmap.save(file_path, 'PNG')
+        if not saved:
+            QtWidgets.QMessageBox.warning(self, '导出失败', '无法保存图片，请检查路径或权限。')
+            return
+        self.scan_log.append(f'已导出图片到 {file_path}')
+        QtWidgets.QMessageBox.information(self, '导出完成', f'图片已保存到:\n{file_path}')
 
     def _add_selected_to_watchlist(self) -> None:
         if self.add_to_watchlist is None:

@@ -104,8 +104,9 @@ try:
 except Exception:
     # Fallback stub: if main_ui cannot be imported we provide a minimal MainWindow implementation
     class MainWindow(QtWidgets.QMainWindow):
-        def __init__(self) -> None:
+        def __init__(self, db_path: Optional[Path] = None) -> None:
             super().__init__()
+            self.db_path = db_path
             self.setWindowTitle("A 股 K 线与导入工具（缺少 main_ui）")
             self.resize(800, 480)
             label = QtWidgets.QLabel("无法加载主界面模块 main_ui.py。请检查模块是否存在。", self)
