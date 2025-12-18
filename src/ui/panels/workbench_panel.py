@@ -15,6 +15,8 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import os
+
 from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore[import-not-found]
 
 from ...research import (
@@ -45,6 +47,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         chart_focus_handler: Callable[[], None],
         load_symbol_handler: Callable[[str], None],
         render_markers_handler: Optional[Callable[[str, List[Dict[str, Any]], List[Dict[str, Any]]], None]] = None,
+        add_to_watchlist: Optional[Callable[[List[Tuple[str, str]]], None]] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -57,6 +60,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.chart_focus_handler = chart_focus_handler
         self.load_symbol_handler = load_symbol_handler
         self.render_markers_handler = render_markers_handler
+        self.add_to_watchlist = add_to_watchlist
 
         self.current_strategy_key: Optional[str] = None
         self.param_widgets: Dict[str, QtWidgets.QWidget] = {}
@@ -69,10 +73,14 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.backtest_equity_template = base_dir / 'rendering' / 'templates' / 'backtest_equity.html'
         self._equity_dialog: Optional[EChartsPreviewDialog] = None
 
-        # Faster scan defaults: larger batch, fewer rows per symbol
-        self.scanner = StrategyScanner(registry, batch_size=64, rows_per_symbol=800)
+        # Faster scan defaults: larger并发。根据CPU动态提升线程数，力求更快扫描
+        cpu_cnt = os.cpu_count() or 8
+        # 更激进的并发，目标尽量压满 CPU（最高 512 线程）
+        max_workers = min(512, max(8, cpu_cnt * 16))
+        self.scanner = StrategyScanner(registry, batch_size=128, max_workers=max_workers, rows_per_symbol=800)
         self.scanner.progress.connect(self._append_scan_log)
         self.scanner.progress.connect(self._on_scan_progress)
+        self.scanner.result.connect(self._on_scan_result)
         self.scanner.finished.connect(self._on_scan_finished)
         self.scanner.failed.connect(self._on_scan_failed)
         self.scanner.cancelled.connect(self._on_scan_cancelled)
@@ -224,7 +232,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
 
         self.scan_start = QtWidgets.QDateEdit(tab)
         self.scan_start.setCalendarPopup(True)
-        self.scan_start.setDate(QtCore.QDate.currentDate().addYears(-1))
+        self.scan_start.setDate(QtCore.QDate.currentDate())
         form.addRow('开始日期:', self.scan_start)
 
         self.scan_end = QtWidgets.QDateEdit(tab)
@@ -244,6 +252,12 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.scan_cancel_button.clicked.connect(self._cancel_scan)
         self.scan_cancel_button.setVisible(False)
         action_row.addWidget(self.scan_cancel_button)
+
+        self.scan_add_watchlist_button = QtWidgets.QPushButton('加入自选', tab)
+        self.scan_add_watchlist_button.setProperty('class', 'ghost')
+        self.scan_add_watchlist_button.setEnabled(False)
+        self.scan_add_watchlist_button.clicked.connect(self._add_selected_to_watchlist)
+        action_row.addWidget(self.scan_add_watchlist_button)
 
         self.scan_progress_label = QtWidgets.QLabel('进度 0/0', tab)
         self.scan_progress_label.setProperty('class', 'muted')
@@ -266,11 +280,12 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.scan_table = QtWidgets.QTableWidget(tab)
         self.scan_table.setProperty('class', 'data-table')
         self.scan_table.setColumnCount(6)
-        self.scan_table.setHorizontalHeaderLabels(['排名', '股票', '买入日期', '买入价', '得分', '备注'])
+        self.scan_table.setHorizontalHeaderLabels(['股票', '代码', '买入日期', '买入价', '得分', '备注'])
         self.scan_table.horizontalHeader().setStretchLastSection(True)
         self.scan_table.verticalHeader().setVisible(False)
         self.scan_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.scan_table.doubleClicked.connect(self._on_scan_row_activated)
+        self.scan_table.itemSelectionChanged.connect(self._update_scan_action_state)
         layout.addWidget(self.scan_table, 1)
 
         self.scan_log = QtWidgets.QTextEdit(tab)
@@ -287,7 +302,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
 
-        strip, labels = self._create_kpi_strip(['净利润', '最大回撤', '胜率'])
+        strip, labels = self._create_kpi_strip(['净利润', '总收益%', '最大回撤', '胜率'])
         self.backtest_kpis = labels
         layout.addWidget(strip)
 
@@ -603,6 +618,8 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
 
         self.scan_total_count = len(universe)
         self.scan_processed_count = 0
+        self.scan_results = []
+        self.scan_table.setRowCount(0)
         self._update_scan_progress_label()
         request = ScanRequest(
             strategy_key=definition.key,
@@ -629,7 +646,8 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         self.scan_results = results
         self.scan_table.setRowCount(len(results))
         for row, result in enumerate(results):
-            self.scan_table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(row + 1)))
+            display_name = result.name or result.symbol
+            self.scan_table.setItem(row, 0, QtWidgets.QTableWidgetItem(display_name))
             self.scan_table.setItem(row, 1, QtWidgets.QTableWidgetItem(result.symbol))
             self.scan_table.setItem(row, 2, QtWidgets.QTableWidgetItem(result.entry_date or ''))
             price_text = f"{result.entry_price:.2f}" if isinstance(result.entry_price, (int, float)) else ''
@@ -640,6 +658,28 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             self.scan_table.setItem(row, 5, QtWidgets.QTableWidgetItem(remark))
         self.scan_log.append(f'选股完成，共 {len(results)} 条结果')
         self._update_scan_kpis(results)
+        self._update_scan_action_state()
+
+    def _append_scan_result_row(self, result: ScanResult) -> None:
+        row = self.scan_table.rowCount()
+        self.scan_table.insertRow(row)
+        display_name = result.name or result.symbol
+        self.scan_table.setItem(row, 0, QtWidgets.QTableWidgetItem(display_name))
+        self.scan_table.setItem(row, 1, QtWidgets.QTableWidgetItem(result.symbol))
+        self.scan_table.setItem(row, 2, QtWidgets.QTableWidgetItem(result.entry_date or ''))
+        price_text = f"{result.entry_price:.2f}" if isinstance(result.entry_price, (int, float)) else ''
+        self.scan_table.setItem(row, 3, QtWidgets.QTableWidgetItem(price_text))
+        score_text = f"{result.score:.2f}" if isinstance(result.score, (int, float)) else str(result.score)
+        self.scan_table.setItem(row, 4, QtWidgets.QTableWidgetItem(score_text))
+        remark = result.metadata.get('note') or result.metadata.get('status', '')
+        self.scan_table.setItem(row, 5, QtWidgets.QTableWidgetItem(remark))
+
+    def _on_scan_result(self, result: object) -> None:
+        if not isinstance(result, ScanResult):
+            return
+        self.scan_results.append(result)
+        self._append_scan_result_row(result)
+        self._update_scan_kpis(self.scan_results)
         self._update_scan_action_state()
 
     def _populate_backtest_table(self, trades: List[Dict[str, Any]]) -> None:
@@ -840,6 +880,7 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
     def _filter_universe_by_board(self, universe: List[str]) -> List[str]:
         if not hasattr(self, 'scan_board_filter'):
             return universe
+        # 勾选的板块视为要过滤掉的板块
         selected_boards = [
             item.text()
             for item in self.scan_board_filter.findItems('*', QtCore.Qt.MatchWrap | QtCore.Qt.MatchWildcard)
@@ -849,34 +890,29 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             return universe
         filtered: List[str] = []
         for code in universe:
+            # 若代码属于勾选板块，则跳过；未命中勾选板块的保留
             if any(self._matches_board(code, board) for board in selected_boards):
-                filtered.append(code)
+                continue
+            filtered.append(code)
         return filtered
 
     @staticmethod
     def _matches_board(code: str, board: str) -> bool:
-        code_upper = (code or "").upper()
-        # Normalize common prefixes: ensure exchange prefix present
-        # Assume tables may be raw numeric like 300001, 688001, 830001, 430001, 800*** (BSE), or full SZ300001/SH688001/BJ800***.
-        if code_upper.startswith("SZ") or code_upper.startswith("SH") or code_upper.startswith("BJ"):
-            normalized = code_upper
-        elif code_upper.startswith("8") or code_upper.startswith("4"):
-            normalized = f"BJ{code_upper}"
-        elif code_upper.startswith("3"):
-            normalized = f"SZ{code_upper}"
-        elif code_upper.startswith("6"):
-            normalized = f"SH{code_upper}"
-        else:
-            normalized = code_upper
+        code_str = (code or "").strip()
+        if not code_str:
+            return False
+        # 取纯数字部分开头判断
+        digits = "".join(ch for ch in code_str if ch.isdigit())
+        prefix = digits[:3] if len(digits) >= 3 else digits
 
         if board == "创业板":
-            return normalized.startswith("SZ300") or normalized.startswith("SZ301")
+            return prefix.startswith("300") or prefix.startswith("301")
         if board == "科创板":
-            return normalized.startswith("SH688") or normalized.startswith("SH689")
+            return prefix.startswith("688") or prefix.startswith("689")
         if board == "北交所":
-            return normalized.startswith("BJ8") or normalized.startswith("BJ4")
+            return prefix.startswith("8") or prefix.startswith("4") or prefix.startswith("920")
         if board == "新三板":
-            return normalized.startswith("43") or normalized.startswith("83") or normalized.startswith("87") or normalized.startswith("BJ43") or normalized.startswith("BJ83") or normalized.startswith("BJ87")
+            return prefix.startswith("43") or prefix.startswith("83") or prefix.startswith("87")
         return False
 
     def _update_scan_progress_label(self) -> None:
@@ -891,6 +927,11 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         enabled = has_results and not self.scan_running
         self.scan_export_button.setEnabled(enabled)
         self.scan_copy_button.setEnabled(enabled)
+        has_selection = bool(self.scan_table.selectedItems()) if hasattr(self, 'scan_table') else False
+        if hasattr(self, 'scan_add_watchlist_button'):
+            self.scan_add_watchlist_button.setEnabled(
+                enabled and has_selection and self.add_to_watchlist is not None
+            )
 
     def _export_scan_results(self) -> None:
         if not self.scan_results:
@@ -931,6 +972,30 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         symbols = [result.symbol for result in self.scan_results]
         QtWidgets.QApplication.clipboard().setText('\n'.join(symbols))
         self.scan_log.append('已复制选股结果到剪贴板')
+
+    def _add_selected_to_watchlist(self) -> None:
+        if self.add_to_watchlist is None:
+            QtWidgets.QMessageBox.information(self, '未启用自选', '未检测到自选股存储，无法加入自选。')
+            return
+        if not hasattr(self, 'scan_table') or self.scan_table is None:
+            return
+        rows = {idx.row() for idx in self.scan_table.selectedIndexes()}
+        if not rows:
+            QtWidgets.QMessageBox.information(self, '无选中', '请先在列表中选择要加入自选的股票。')
+            return
+        items: List[Tuple[str, str]] = []
+        for row in rows:
+            code_item = self.scan_table.item(row, 1)
+            name_item = self.scan_table.item(row, 0)
+            symbol = code_item.text().strip() if code_item else ''
+            name = name_item.text().strip() if name_item else ''
+            if symbol:
+                items.append((symbol, name))
+        if not items:
+            QtWidgets.QMessageBox.information(self, '无有效数据', '所选行缺少代码，无法加入自选。')
+            return
+        self.add_to_watchlist(items)
+        self.scan_log.append(f'已将 {len(items)} 只股票加入自选')
 
     def _toggle_backtest_controls(self, running: bool) -> None:
         self.backtest_running = running
@@ -1005,8 +1070,10 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             trades = result.trades
             wins = sum(1 for trade in trades if trade.get('pnl', 0) > 0)
             win_rate = wins / len(trades) if trades else 0.0
+        ret_pct = result.metrics.get('return_pct', 0.0)
         self._assign_kpi_values(self.backtest_kpis, {
             '净利润': f'{net:.2f}',
+            '总收益%': f'{ret_pct:.2f}%',
             '最大回撤': f'{drawdown:.2f}',
             '胜率': f'{win_rate * 100:.1f}%',
         })

@@ -16,6 +16,7 @@ class SymbolListManager(QtCore.QObject):
         current_table_getter: Optional[Callable[[], Optional[str]]] = None,
         log_handler: Optional[Callable[[str], None]] = None,
         sample_entries: Optional[Sequence[Dict[str, Any]]] = None,
+        selection_mode: QtWidgets.QAbstractItemView.SelectionMode = QtWidgets.QAbstractItemView.SingleSelection,
     ) -> None:
         super().__init__(list_view)
         self._view = list_view
@@ -28,7 +29,7 @@ class SymbolListManager(QtCore.QObject):
         self._delegate = _SymbolListDelegate(self._view)
         self._view.setModel(self._model)
         self._view.setItemDelegate(self._delegate)
-        self._view.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._view.setSelectionMode(selection_mode)
         self._view.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self._view.setSpacing(2)
         self._view.setUniformItemSizes(True)

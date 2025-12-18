@@ -21,6 +21,7 @@ class StrategyScanWorker(QtCore.QObject):
     """Background worker that executes a stock-picking scan in a QThread."""
 
     progress = QtCore.pyqtSignal(str)
+    result = QtCore.pyqtSignal(object)
     finished = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
     cancelled = QtCore.pyqtSignal()
@@ -38,6 +39,7 @@ class StrategyScanWorker(QtCore.QObject):
                 self._request,
                 self._db_path,
                 progress_callback=self.progress.emit,
+                result_callback=self.result.emit,
                 cancel_callback=lambda: self._cancelled,
             )
         except ScanCancelled:
@@ -55,6 +57,7 @@ class StrategyScanner(QtCore.QObject):
     """Batch runner that evaluates a strategy across a universe."""
 
     progress = QtCore.pyqtSignal(str)
+    result = QtCore.pyqtSignal(object)
     finished = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
     cancelled = QtCore.pyqtSignal()
@@ -79,7 +82,7 @@ class StrategyScanner(QtCore.QObject):
 
     def run(self, request: ScanRequest, db_path) -> List[ScanResult]:
         try:
-            results = self._execute(request, db_path, progress_callback=self.progress.emit)
+            results = self._execute(request, db_path, progress_callback=self.progress.emit, result_callback=self.result.emit)
             self.finished.emit(results)
             return results
         except Exception as exc:  # pragma: no cover
@@ -96,6 +99,7 @@ class StrategyScanner(QtCore.QObject):
 
         thread.started.connect(worker.run)
         worker.progress.connect(self.progress.emit)
+        worker.result.connect(self.result.emit)
         worker.finished.connect(self._on_worker_finished)
         worker.failed.connect(self._on_worker_failed)
         worker.cancelled.connect(self._on_worker_cancelled)
@@ -139,6 +143,7 @@ class StrategyScanner(QtCore.QObject):
         db_path,
         *,
         progress_callback: Optional[Callable[[str], None]] = None,
+        result_callback: Optional[Callable[[Any], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
     ) -> List[ScanResult]:
         db_path_obj = Path(db_path)
@@ -158,8 +163,8 @@ class StrategyScanner(QtCore.QObject):
                     db_path_obj,
                     batch,
                     limit_per_table=self.rows_per_symbol,
-                    start_date=request.start_date,
-                    end_date=request.end_date,
+                    start_date=None,
+                    end_date=None,
                 )
                 for table_name, payload in preloaded.items():
                     inject_preloaded_candles(db_path_obj, table_name, payload)
@@ -188,6 +193,8 @@ class StrategyScanner(QtCore.QObject):
                     else:
                         if result is not None:
                             scan_results.append(result)
+                            if result_callback:
+                                result_callback(result)
                     if progress_callback:
                         progress_callback(f"扫描 {table_name} ({processed}/{total})")
                     if cancel_callback and cancel_callback():
@@ -213,8 +220,9 @@ class StrategyScanner(QtCore.QObject):
             symbol=table_name,
             params=request.params,
             current_only=False,
-            start_date=request.start_date,
-            end_date=request.end_date,
+            # 运行全量K线，后续再用日期窗口过滤买点
+            start_date=None,
+            end_date=None,
             mode="scan",
         )
         run_result = self.registry.run_strategy(request.strategy_key, context)
@@ -228,6 +236,7 @@ class StrategyScanner(QtCore.QObject):
         return ScanResult(
             strategy_key=request.strategy_key,
             symbol=context.symbol or table_name,
+            name=(run_result.extra_data.get("instrument", {}) or {}).get("name", ""),
             table_name=table_name,
             score=result_payload["score"],
             entry_date=result_payload["entry_date"],

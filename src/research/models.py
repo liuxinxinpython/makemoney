@@ -96,6 +96,7 @@ class ScanRequest:
 class ScanResult:
     strategy_key: str
     symbol: str
+    name: str
     table_name: str
     score: float
     entry_date: Optional[str] = None

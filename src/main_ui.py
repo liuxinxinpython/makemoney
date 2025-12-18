@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore[import-not-found]
 from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineView  # type: ignore[import-not-found]
@@ -12,6 +12,7 @@ from .ui.data import load_sample_symbols
 from .ui.pages import SnowDataPage, SnowQuotesPage
 from .ui.widgets.left_nav import SnowLeftNav
 from .ui.widgets.top_header import SnowTopHeader
+from .data.watchlist_store import WatchlistStore
 
 try:
     from .ui.theme import apply_app_theme  # type: ignore[import-not-found]
@@ -170,6 +171,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.strategy_panel_widget: Optional[QtWidgets.QWidget] = None
         self.strategy_panel_controller: Optional[StrategyPanelController] = None
         self.sample_symbol_entries: List[Dict[str, Any]] = load_sample_symbols()
+        self.watchlist_db_path: Path = Path(__file__).resolve().parent / "data" / "watchlists.db"
+        try:
+            self.watchlist_store = WatchlistStore(self.watchlist_db_path)
+        except Exception as exc:
+            print(f"[UI] Failed to init watchlist store: {exc}")
+            self.watchlist_store = WatchlistStore()
+        self.current_watchlist_id: Optional[int] = None
         self.window_min_button: Optional[QtWidgets.QToolButton] = None
         self.window_max_button: Optional[QtWidgets.QToolButton] = None
         self.window_close_button: Optional[QtWidgets.QToolButton] = None
@@ -336,6 +344,7 @@ class MainWindow(QtWidgets.QMainWindow):
             current_table_getter=self._current_symbol_table,
             log_handler=self.append_log,
             sample_entries=self.sample_symbol_entries,
+            selection_mode=QtWidgets.QAbstractItemView.ExtendedSelection,
         )
 
     def switch_to_quotes(self) -> None:
@@ -470,6 +479,7 @@ class MainWindow(QtWidgets.QMainWindow):
             kline_controller=self.kline_controller,
             db_path_getter=lambda: self.db_path,
             log_handler=self.append_log,
+            watchlist_adder=self.add_symbols_to_watchlist,
             parent=self,
         )
         self.workbench_controller = controller
@@ -499,6 +509,33 @@ class MainWindow(QtWidgets.QMainWindow):
     def _select_symbol_from_manager(self, table_name: str) -> None:
         if self.kline_controller:
             self.kline_controller.select_symbol(table_name)
+
+    # --- Watchlist helpers -------------------------------------------------
+    def ensure_default_watchlist(self) -> int:
+        try:
+            lists = self.watchlist_store.list_watchlists()
+        except Exception:
+            lists = []
+        if not lists:
+            return -1
+        wid = int(lists[0][0])
+        self.current_watchlist_id = wid
+        return wid
+
+    def add_symbols_to_watchlist(self, items: List[Tuple[str, str]], watchlist_id: Optional[int] = None) -> None:
+        if not items:
+            return
+        wid = watchlist_id or self.current_watchlist_id
+        if wid is None or wid <= 0:
+            QtWidgets.QMessageBox.information(self, "缺少自选分组", "请先在“自选”页创建分组后再添加股票。")
+            return
+        try:
+            self.watchlist_store.add_symbols(wid, items)
+            self.append_log(f"已加入自选: {', '.join(sym for sym, _ in items)}")
+            if self.quotes_view:
+                self.quotes_view.refresh_watchlist_view(wid)
+        except Exception as exc:
+            self.append_log(f"加入自选失败: {exc}")
 
     def focus_chart(self) -> None:
         if self.kline_controller and hasattr(self.kline_controller, "focus_chart"):

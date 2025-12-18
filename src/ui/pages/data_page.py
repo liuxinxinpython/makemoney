@@ -255,7 +255,7 @@ QToolButton[class~="snowAction"]:hover {
         end_edit.setCalendarPopup(True)
         end_edit.setDisplayFormat("yyyy-MM-dd")
         today = QtCore.QDate.currentDate()
-        start_edit.setDate(today.addDays(-30))
+        start_edit.setDate(today)
         end_edit.setDate(today)
         host.tushare_start_date = start_edit
         host.tushare_end_date = end_edit

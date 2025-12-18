@@ -48,6 +48,16 @@ def _consume_preloaded(db_path: Path, table_name: str):
         return _PRELOADED_CANDLES.pop(_cache_key(db_path, table_name), None)
 
 
+def _apply_fast_pragmas(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=OFF;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA cache_size=-200000;")
+    except Exception:
+        pass
+
+
 def load_candles_from_sqlite(
     db_path: Path,
     table_name: str,
@@ -87,6 +97,7 @@ def load_candles_from_sqlite(
 
     try:
         with sqlite3.connect(db_path) as conn:
+            _apply_fast_pragmas(conn)
             df = pd.read_sql_query(query, conn)
     except Exception as e:
         print(f"DEBUG: load_candles_from_sqlite failed: {e}")

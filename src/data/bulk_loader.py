@@ -17,6 +17,16 @@ CANDLE_COLUMNS = ["date", "open", "high", "low", "close", "volume", "name", "sym
 BulkPayload = Tuple[List[Dict[str, float]], List[Dict[str, float]], Dict[str, str]]
 
 
+def _apply_fast_pragmas(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=OFF;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA cache_size=-200000;")  # ~200MB page cache
+    except Exception:
+        pass
+
+
 def load_candles_bulk(
     db_path: Path,
     table_names: Iterable[str],
@@ -48,6 +58,7 @@ def load_candles_bulk(
     union_sql = " UNION ALL ".join(subqueries)
     try:
         with sqlite3.connect(db_path) as conn:
+            _apply_fast_pragmas(conn)
             frame = pd.read_sql_query(union_sql, conn)
     except Exception:
         return {}

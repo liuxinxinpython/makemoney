@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt5 import QtCore, QtWidgets  # type: ignore[import-not-found]
 
@@ -87,6 +87,7 @@ class StrategyWorkbenchController(QtCore.QObject):
         kline_controller: KLineController,
         db_path_getter: Callable[[], Path],
         log_handler: Callable[[str], None],
+        watchlist_adder: Optional[Callable[[List[Tuple[str, str]]], None]] = None,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -95,6 +96,7 @@ class StrategyWorkbenchController(QtCore.QObject):
         self.kline_controller = kline_controller
         self._db_path_getter = db_path_getter
         self._log = log_handler
+        self._add_to_watchlist = watchlist_adder
 
         self.strategy_registry: Optional[StrategyRegistry] = None
         self.workbench_panel: Optional[StrategyWorkbenchPanel] = None
@@ -192,6 +194,7 @@ class StrategyWorkbenchController(QtCore.QObject):
                 chart_focus_handler=self.kline_controller.focus_chart,
                 load_symbol_handler=self.kline_controller.select_symbol,
                 render_markers_handler=self._render_custom_markers,
+                add_to_watchlist=self._add_to_watchlist,
                 parent=parent,
             )
         else:

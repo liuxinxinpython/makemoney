@@ -175,6 +175,10 @@
             }
           }
           const lines = [];
+          const nameLine = instrument.name || instrument.display || instrument.symbol || '';
+          if (nameLine) {
+            lines.push(`标的：${nameLine}`);
+          }
           lines.push(`时间：${params[0].axisValue}`);
           if (open != null) lines.push(`开盘：${open}`);
           if (high != null) lines.push(`最高：${high}`);

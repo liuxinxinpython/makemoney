@@ -176,7 +176,22 @@ class ZigZagWavePeaksValleysStrategy:
         major_wave_lines = self._major_wave_strokes(candles, major_pivots, pivots)
         overlays = strokes + major_wave_lines
         status_message = f"{status_message}；主波段线 {len(major_wave_lines)}"
-        extra_data: Dict[str, Any] = {"pivots": pivots, "trades": trades, "strokes": strokes, "major_wave_lines": major_wave_lines}
+        scan_candidates: List[Dict[str, Any]] = []
+        for t in trades:
+            entry_time = t.get("entry_time")
+            entry_price = t.get("entry_price")
+            if entry_time is not None and entry_price is not None:
+                scan_candidates.append(
+                    {"date": entry_time, "price": entry_price, "score": 1.0, "note": "买入信号"}
+                )
+        extra_data: Dict[str, Any] = {
+            "pivots": pivots,
+            "trades": trades,
+            "strokes": strokes,
+            "major_wave_lines": major_wave_lines,
+            "scan_candidates": scan_candidates,
+            "instrument": {"name": _instrument.get("name") if isinstance(_instrument, dict) else ""},
+        }
 
         if HAS_DISPLAY:
             return DisplayResult(
@@ -386,7 +401,7 @@ class ZigZagWavePeaksValleysStrategy:
             first = use_pivots[i]
             if first["type"] != "valley":
                 continue
-            # 需要后续有峰确认
+            # 找到该谷之后的首个峰作为起点；如果不存在峰则跳过
             peak_idx = None
             for j in range(i + 1, len(use_pivots)):
                 if use_pivots[j]["type"] == "peak":
@@ -409,16 +424,6 @@ class ZigZagWavePeaksValleysStrategy:
             retest_price: Optional[float] = None
             retest_high: Optional[float] = None
             active_entry: Optional[Dict[str, Any]] = None
-            # 记录前一个大级别波谷，允许结束波谷被后续波段回踩
-            prev_anchor_price = None
-            prev_anchor_idx = None
-            prev_anchor_time = None
-            for back in range(i - 1, -1, -1):
-                if use_pivots[back]["type"] == "valley":
-                    prev_anchor_idx = use_pivots[back]["index"]
-                    prev_anchor_price = float(candles[prev_anchor_idx].get("low", candles[prev_anchor_idx].get("close", 0)) or 0)
-                    prev_anchor_time = candles[prev_anchor_idx].get("time", prev_anchor_idx)
-                    break
 
             for idx in range(peak_idx + 1, len(candles)):
                 candle = candles[idx]
@@ -436,18 +441,6 @@ class ZigZagWavePeaksValleysStrategy:
                         break
                     # 先记录首次触及回踩区
                     if retest_index is None and low_price <= entry_zone and low_price > stop_price:
-                        retest_index = idx
-                        retest_time = time_value
-                        retest_price = low_price
-                        retest_high = high_price
-                        continue
-                    # 允许回踩前一个大级别波谷（结束波谷）
-                    if (
-                        prev_anchor_price is not None
-                        and retest_index is None
-                        and low_price <= prev_anchor_price * (1.0 + tolerance)
-                        and low_price > prev_anchor_price * 0.95
-                    ):
                         retest_index = idx
                         retest_time = time_value
                         retest_price = low_price
