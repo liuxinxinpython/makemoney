@@ -6,118 +6,53 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     from ..data.data_loader import load_candles_from_sqlite
     HAS_DATA_LOADER = True
-except Exception:  # pragma: no cover - optional import
+except Exception:  # pragma: no cover
     load_candles_from_sqlite = None
     HAS_DATA_LOADER = False
 
 try:
     from ..displays import DisplayResult  # type: ignore[import-not-found]
     HAS_DISPLAY = True
-except Exception:  # pragma: no cover - optional import
+except Exception:  # pragma: no cover
     DisplayResult = None
     HAS_DISPLAY = False
 
 try:
     from ..research import StrategyContext, StrategyRunResult
     from ..research.models import StrategyParameter
-except Exception:  # pragma: no cover - optional import
+except Exception:  # pragma: no cover
     StrategyContext = None
     StrategyRunResult = None
     StrategyParameter = None
 
 from .helpers import serialize_run_result
 
-# UI metadata for the workbench parameter panel.
-ZIGZAG_STRATEGY_PARAMETERS: List[StrategyParameter] = []
+# 参数定义
+ZIGZAG_VOLUME_DOUBLE_LONG_PARAMETERS: List[StrategyParameter] = []
 if StrategyParameter is not None:
-    ZIGZAG_STRATEGY_PARAMETERS = [
-        StrategyParameter(
-            key="min_reversal_pct",
-            label="最小反转 (%)",
-            type="number",
-            default=6.0,
-            description="价格至少反转该百分比才确认新枢轴。",
-        ),
-        StrategyParameter(
-            key="major_reversal_pct",
-            label="主波段反转阈值 (%)",
-            type="number",
-            default=12.0,
-            description="大级别 ZigZag 反转阈值，用于划分主波段（父浪）；回踩/买点仅在主波段内识别。",
-        ),
-        StrategyParameter(
-            key="pivot_depth",
-            label="枢轴深度(根数)",
-            type="number",
-            default=1,
-            description="经典 ZigZag 深度，枢轴需与前一个至少间隔这么多K线，过近则替换为更极值。（主波段与普通枢轴共用）",
-        ),
-        StrategyParameter(
-            key="retest_tolerance_pct",
-            label="回踩容差 (%)",
-            type="number",
-            default=1.5,
-            description="回踩到距上一个波谷该百分比内，视作买入触发区。",
-        ),
-        StrategyParameter(
-            key="stop_loss_pct",
-            label="止损(回踩点) (%)",
-            type="number",
-            default=2.0,
-            description="买入后跌破回踩点该百分比止损，固定为回踩点下2%。",
-        ),
-        StrategyParameter(
-            key="drawdown_take_profit_pct",
-            label="回撤止盈 (%)",
-            type="number",
-            default=7.0,
-            description="买入后创出高点再回撤超过该百分比即止盈卖出；设为 0 关闭。",
-        ),
-        StrategyParameter(
-            key="long_upper_shadow_pct",
-            label="长上影止盈 (%)",
-            type="number",
-            default=5.0,
-            description="如果当日上影长度占收盘价比例超过该值则止盈（0 关闭）。",
-        ),
-        StrategyParameter(
-            key="support_lookback_bars",
-            label="支撑查找回溯K线数",
-            type="number",
-            default=180,
-            description="向后查找密集支撑区的K线数量。",
-        ),
-        StrategyParameter(
-            key="support_band_pct",
-            label="支撑密集带宽 (%)",
-            type="number",
-            default=1.0,
-            description="定义密集区价带宽度（±该百分比）。",
-        ),
-        StrategyParameter(
-            key="confirm_break_level",
-            label="确认：突破回踩高点(0/1)",
-            type="number",
-            default=1,
-            description="回踩后需突破回踩K线的最高价才买入。",
-        ),
-        StrategyParameter(
-            key="confirm_bullish_candle",
-            label="确认：阳线或吞没(0/1)",
-            type="number",
-            default=1,
-            description="回踩后需出现阳线（收盘>开盘）或实体大于前一根实体。",
-        ),
+    ZIGZAG_VOLUME_DOUBLE_LONG_PARAMETERS = [
+        StrategyParameter("min_reversal_pct", "最小反转 (%)", "number", 6.0, "价格至少反转该百分比才确认新枢轴。"),
+        StrategyParameter("major_reversal_pct", "主波段反转阈值 (%)", "number", 12.0, "大级别 ZigZag 反转阈值，用于划分主波段。"),
+        StrategyParameter("pivot_depth", "枢轴深度(根数)", "number", 1, "枢轴需与前一个至少间隔这么多K线。"),
+        StrategyParameter("retest_tolerance_pct", "回踩容差 (%)", "number", 1.5, "回踩到距上一个波谷该百分比内视作买入触发区。"),
+        StrategyParameter("stop_loss_pct", "止损(回踩点) (%)", "number", 2.0, "买入后跌破回踩点该百分比止损。"),
+        StrategyParameter("drawdown_take_profit_pct", "回撤止盈 (%)", "number", 7.0, "创高后回撤超过该百分比止盈；0 关闭。"),
+        StrategyParameter("long_upper_shadow_pct", "长上影止盈 (%)", "number", 5.0, "上影占收盘比例超过该值止盈；0 关闭。"),
+        StrategyParameter("support_lookback_bars", "支撑回溯K数", "number", 180, "向后查找密集支撑区的K线数量。"),
+        StrategyParameter("support_band_pct", "支撑带宽 (%)", "number", 1.0, "定义支撑密集区价带宽度（±该百分比）。"),
+        StrategyParameter("confirm_break_level", "确认：突破回踩高点(0/1)", "number", 1, "回踩后需突破回踩K线最高价才买入。"),
+        StrategyParameter("confirm_bullish_candle", "确认：阳线或吞没(0/1)", "number", 1, "回踩后需出现阳线或实体大于前一根实体。"),
+        StrategyParameter("volume_factor_first", "首阳倍量系数", "number", 1.8, "首根放量需达到回踩后最小量的倍数。"),
+        StrategyParameter("volume_factor_second", "次阳倍量系数", "number", 1.8, "二次放量需达到回踩后最小量的倍数。"),
+        StrategyParameter("avg_volume_window", "均量窗口", "number", 20, "均量备用窗口。"),
+        StrategyParameter("post_retest_avg_window", "回踩后均量窗口", "number", 3, "回踩后短期均量窗口。"),
+        StrategyParameter("pullback_pct", "首阳后最小回调(%)", "number", 1.0, "首阳后需回调/横盘该比例或至少隔两根。"),
     ]
 
 
-class ZigZagWavePeaksValleysStrategy:
+class ZigZagVolumeDoubleLongStrategy:
     """
-    ZigZag 波峰波谷识别：用最小反转幅度在收盘价上寻找波峰/波谷，
-    并给波谷/波峰分别打出买入/卖出标记。
-
-    扩展了“回踩波谷 + 止损”玩法：波谷确认后走出波峰，回踩到波谷上方容差区且未破止损时买入，
-    止损放在波谷下方，可选按 R 倍止盈。
+    波谷回踩 + 首阳放量 + 二次放量买入，骨架基于 zigzag_wave_peaks_valleys。
     """
 
     def __init__(
@@ -133,10 +68,14 @@ class ZigZagWavePeaksValleysStrategy:
         confirm_bullish_candle: bool = True,
         support_lookback_bars: int = 180,
         support_band_pct: float = 1.0,
+        volume_factor_first: float = 1.8,
+        volume_factor_second: float = 1.8,
+        avg_volume_window: int = 20,
+        post_retest_avg_window: int = 3,
+        pullback_pct: float = 1.0,
     ) -> None:
         if not HAS_DATA_LOADER:
             raise ImportError("Missing data_loader module; cannot load candles.")
-        # Convert percent to fraction; enforce a tiny floor to avoid division by zero.
         self.min_reversal = max(0.0005, float(min_reversal_pct) / 100.0)
         self.major_reversal = max(self.min_reversal, float(major_reversal_pct) / 100.0)
         self.pivot_depth = max(1, int(pivot_depth))
@@ -148,43 +87,41 @@ class ZigZagWavePeaksValleysStrategy:
         self.confirm_bullish_candle = bool(confirm_bullish_candle)
         self.support_lookback_bars = max(10, int(support_lookback_bars or 0))
         self.support_band = max(0.0005, float(support_band_pct) / 100.0)
+        self.vol_factor_first = max(1.0, float(volume_factor_first))
+        self.vol_factor_second = max(1.0, float(volume_factor_second))
+        self.avg_volume_window = max(5, int(avg_volume_window))
+        self.post_retest_avg_window = max(1, int(post_retest_avg_window))
+        self.pullback_pct = max(0.0, float(pullback_pct) / 100.0)
 
     def scan_current_symbol(self, db_path: Path, table_name: str) -> Optional[Any]:
         data = load_candles_from_sqlite(db_path, table_name)
         if data is None:
             raise ValueError(f"Unable to load candles for symbol {table_name}")
-        candles, _volumes, _instrument = data
+        candles, volumes, _instrument = data
 
         pivots = self._detect_pivots(candles, self.min_reversal, self.pivot_depth)
         major_pivots = self._detect_pivots(candles, self.major_reversal, max(1, self.pivot_depth))
-        # Fallback so preview always shows at least one buy/sell pair.
         if not pivots and candles:
-            pivots = [
-                {"index": 0, "type": "valley"},
-                {"index": len(candles) - 1, "type": "peak"},
-            ]
+            pivots = [{"index": 0, "type": "valley"}, {"index": len(candles) - 1, "type": "peak"}]
 
-        # 回踩买点：按主波段波谷为锚点，仅首个回踩触发
-        trades = self._detect_valley_retests(candles, pivots, major_pivots)
+        trades = self._detect_valley_retests(candles, volumes, pivots, major_pivots)
         pivot_markers = self._pivot_markers(pivots, candles) if pivots else []
         trade_markers = self._trade_markers(trades) if trades else []
         markers = pivot_markers + trade_markers
-        overlays: List[Dict[str, Any]] = []
-        open_trades = sum(1 for t in trades if not t.get("exit_time"))
-        status_message = f"回踩交易 {len(trades)}，持仓中 {open_trades}"
         strokes = self._retest_strokes(trades, candles)
         major_wave_lines = self._major_wave_strokes(candles, major_pivots, pivots)
         overlays = strokes + major_wave_lines
-        status_message = f"{status_message}；主波段线 {len(major_wave_lines)}"
+        open_trades = sum(1 for t in trades if not t.get("exit_time"))
+        status_message = f"回踩交易 {len(trades)}，持仓中 {open_trades}；主波段线 {len(major_wave_lines)}"
+
         scan_candidates: List[Dict[str, Any]] = []
         for t in trades:
-            entry_time = t.get("entry_time")
-            entry_price = t.get("entry_price")
-            if entry_time is not None and entry_price is not None:
-                scan_candidates.append(
-                    {"date": entry_time, "price": entry_price, "score": 1.0, "note": "买入信号"}
-                )
-        extra_data: Dict[str, Any] = {
+            et = t.get("entry_time")
+            ep = t.get("entry_price")
+            if et is not None and ep is not None:
+                scan_candidates.append({"date": et, "price": ep, "score": 1.0, "note": "买入信号"})
+
+        extra_data = {
             "pivots": pivots,
             "trades": trades,
             "strokes": strokes,
@@ -195,75 +132,29 @@ class ZigZagWavePeaksValleysStrategy:
 
         if HAS_DISPLAY:
             return DisplayResult(
-                strategy_name="zigzag_wave_peaks_valleys",
+                strategy_name="zigzag_volume_double_long",
                 markers=markers,
                 overlays=overlays,
                 status_message=status_message,
                 extra_data=extra_data,
             )
         return {
-            "strategy_name": "zigzag_wave_peaks_valleys",
+            "strategy_name": "zigzag_volume_double_long",
             "markers": markers,
             "overlays": overlays,
             "status_message": status_message,
             "extra_data": extra_data,
         }
 
-    def _find_support_zone(
-        self,
-        candles: List[Dict[str, Any]],
-        start: int,
-        end: int,
-    ) -> Optional[Tuple[float, int, Any]]:
-        """
-        在父浪区间内粗略找一个近端密集支撑区：
-        取 [start, end] 范围内的收盘价，中位数为中心，带宽为 support_band 的区间，
-        取最后一次落在区间内的 K 线作为支撑锚点。
-        """
-        if end < start:
-            return None
-        closes = [float(candles[i].get("close", 0) or 0) for i in range(start, end + 1)]
-        closes = [c for c in closes if c > 0]
-        if not closes:
-            return None
-        closes_sorted = sorted(closes)
-        mid = closes_sorted[len(closes_sorted) // 2]
-        band = max(0.0005, mid * self.support_band)
-        lower = mid - band
-        upper = mid + band
-        anchor_idx = None
-        anchor_price = None
-        for idx in range(end, start - 1, -1):
-            close_price = float(candles[idx].get("close", 0) or 0)
-            if lower <= close_price <= upper:
-                anchor_idx = idx
-                anchor_price = close_price
-                break
-        if anchor_idx is None or anchor_price is None:
-            return None
-        anchor_time = candles[anchor_idx].get("time", anchor_idx)
-        return anchor_price, anchor_idx, anchor_time
-
+    # --- zigzag pivots（复制基础策略）
     @staticmethod
-    def _detect_pivots(
-        candles: List[Dict[str, Any]],
-        min_reversal: float,
-        depth: int,
-    ) -> List[Dict[str, Any]]:
-        """
-        更贴近经典 ZigZag（百分比，高低价）：
-        - 初始方向未定，只有当涨/跌幅超过阈值才确立方向并记下首个枢轴；
-        - 向上段记录最高点，回落超阈确认为波峰；向下段记录最低点，反弹超阈确认为波谷；
-        - 枢轴间隔小于 depth 时，用更极值替换，避免过近/同根重复。
-        """
+    def _detect_pivots(candles: List[Dict[str, Any]], min_reversal: float, depth: int) -> List[Dict[str, Any]]:
         if len(candles) < max(3, depth + 1):
             return []
-
         highs = [float(c.get("high", c.get("close", 0)) or 0) for c in candles]
         lows = [float(c.get("low", c.get("close", 0)) or 0) for c in candles]
-
         pivots: List[Dict[str, Any]] = []
-        direction = 0  # 1 up, -1 down, 0 unknown
+        direction = 0
         last_pivot_idx = 0
         last_pivot_price = (highs[0] + lows[0]) / 2 if highs and lows else 0.0
         extreme_idx = 0
@@ -291,12 +182,10 @@ class ZigZagWavePeaksValleysStrategy:
         for idx in range(1, len(candles)):
             hi = highs[idx]
             lo = lows[idx]
-
             if direction == 0:
                 up_move = (hi - last_pivot_price) / last_pivot_price if last_pivot_price else 0.0
                 down_move = (last_pivot_price - lo) / last_pivot_price if last_pivot_price else 0.0
                 if up_move >= min_reversal:
-                    # 初始向上，首个枢轴是 valley
                     add_pivot(last_pivot_idx, "valley")
                     direction = 1
                     extreme_idx = idx
@@ -314,7 +203,6 @@ class ZigZagWavePeaksValleysStrategy:
                         extreme_price = lo
                         extreme_idx = idx
                 continue
-
             if direction == 1:
                 if hi > extreme_price:
                     extreme_price = hi
@@ -328,7 +216,6 @@ class ZigZagWavePeaksValleysStrategy:
                     extreme_idx = idx
                     extreme_price = lo
                     continue
-
             if direction == -1:
                 if lo < extreme_price:
                     extreme_price = lo
@@ -342,22 +229,14 @@ class ZigZagWavePeaksValleysStrategy:
                     extreme_idx = idx
                     extreme_price = hi
                     continue
-
-        # 收尾：将最后一个极值作为当前方向的枢轴，并用最后一根收口
         if direction == 1:
             add_pivot(extreme_idx, "peak")
         elif direction == -1:
             add_pivot(extreme_idx, "valley")
-
         if pivots:
             last = pivots[-1]
             if last["index"] != len(candles) - 1:
-                pivots.append(
-                    {
-                        "index": len(candles) - 1,
-                        "type": "peak" if last["type"] == "valley" else "valley",
-                    }
-                )
+                pivots.append({"index": len(candles) - 1, "type": "peak" if last["type"] == "valley" else "valley"})
         return pivots
 
     @staticmethod
@@ -383,25 +262,49 @@ class ZigZagWavePeaksValleysStrategy:
     def _detect_valley_retests(
         self,
         candles: List[Dict[str, Any]],
+        volumes: List[Dict[str, Any]],
         pivots: List[Dict[str, Any]],
         major_pivots: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """仅按主波段波谷为锚点，记录首个回踩买点（跨主波段，后续不再重复）。"""
         if not candles or len(major_pivots) < 2 or self.retest_tolerance <= 0:
             return []
 
-        trades: List[Dict[str, Any]] = []
         tolerance = self.retest_tolerance
         stop_pct = self.stop_loss_pct
-        upper_shadow_pct = self.long_upper_shadow_pct
         drawdown_take_profit = self.drawdown_take_profit
+        upper_shadow_pct = self.long_upper_shadow_pct
 
+        vol_list: List[float] = []
+        for v in volumes or []:
+            try:
+                if isinstance(v, dict):
+                    vol_list.append(float(v.get("volume", v.get("vol", v.get("value", v.get("amount", v.get("turnover", 0))))) or 0))
+                else:
+                    vol_list.append(float(v))
+            except Exception:
+                vol_list.append(0.0)
+        if len(vol_list) < len(candles):
+            vol_list.extend([0.0] * (len(candles) - len(vol_list)))
+        else:
+            vol_list = vol_list[: len(candles)]
+
+        def avg_vol(idx: int) -> float:
+            start = max(0, idx - self.avg_volume_window + 1)
+            window = vol_list[start : idx + 1]
+            return sum(window) / len(window) if window else 0.0
+
+        def post_retest_min(idx: int, retest_idx: int) -> float:
+            start = retest_idx + 1
+            end = min(len(vol_list), idx + 1)
+            window = vol_list[start:end]
+            return min(window) if window else avg_vol(idx)
+
+        trades: List[Dict[str, Any]] = []
         use_pivots = major_pivots if len(major_pivots) >= 2 else pivots
         for i in range(len(use_pivots) - 1):
             first = use_pivots[i]
             if first["type"] != "valley":
                 continue
-            # 找到该谷之后的首个峰作为起点；如果不存在峰则跳过
             peak_idx = None
             for j in range(i + 1, len(use_pivots)):
                 if use_pivots[j]["type"] == "peak":
@@ -418,11 +321,18 @@ class ZigZagWavePeaksValleysStrategy:
 
             entry_zone = valley_price * (1.0 + tolerance)
             stop_price = valley_price * (1.0 - stop_pct)
-            overshoot_floor = valley_price * 0.95  # 允许最多跌破波谷 5% 后拉回
+            overshoot_floor = valley_price * 0.95
             retest_index: Optional[int] = None
             retest_time: Optional[Any] = None
             retest_price: Optional[float] = None
             retest_high: Optional[float] = None
+            first_vol_idx: Optional[int] = None
+            first_vol_time: Optional[Any] = None
+            first_vol_price: Optional[float] = None
+            second_vol_time: Optional[Any] = None
+            second_vol_price: Optional[float] = None
+            second_vol_index: Optional[int] = None
+            pullback_seen = False
             active_entry: Optional[Dict[str, Any]] = None
 
             for idx in range(peak_idx + 1, len(candles)):
@@ -432,99 +342,96 @@ class ZigZagWavePeaksValleysStrategy:
                 high_price = float(candle.get("high", close_price) or 0)
                 open_price = float(candle.get("open", close_price) or close_price)
                 time_value = candle.get("time", idx)
-                prev_close = float(candles[idx - 1].get("close", close_price) or close_price) if idx > 0 else close_price
-                prev_high = float(candles[idx - 1].get("high", prev_close) or prev_close) if idx > 0 else close_price
+                vol = vol_list[idx] if idx < len(vol_list) else 0.0
+                avgv = avg_vol(idx)
 
                 if active_entry is None:
-                    # 超过容许跌破幅度则作废
                     if low_price < overshoot_floor:
                         break
-                    # 先记录首次触及回踩区
                     if retest_index is None and low_price <= entry_zone and low_price > stop_price:
                         retest_index = idx
                         retest_time = time_value
                         retest_price = low_price
                         retest_high = high_price
                         continue
-                    # 容许跌破止损但不超过 5% 后拉回的情况，仍视作回踩
                     if retest_index is None and stop_price >= low_price >= overshoot_floor:
                         retest_index = idx
                         retest_time = time_value
                         retest_price = low_price
                         retest_high = high_price
                         continue
-                    # 回踩后需等待至少2根上升K线，且相对回踩价涨幅>=3%才买入
                     if retest_index is not None and idx > retest_index:
-                        rise_ok = valley_price > 0 and ((close_price - valley_price) / valley_price) >= 0.03
-                        bullish_ok = (not self.confirm_bullish_candle) or (close_price > open_price)
-                        if rise_ok and close_price > stop_price and bullish_ok:
-                            # 止损放在回踩点下方2%（再跌破回踩点2%就止损）
-                            base_for_stop = retest_price if retest_price is not None else valley_price
-                            entry_stop = base_for_stop * 0.98 if base_for_stop is not None else stop_price
-                            risk_perc = (close_price - entry_stop) / close_price if close_price else stop_pct
-                            active_entry = {
-                                "entry_time": time_value,
-                                "entry_index": idx,
-                                "entry_price": close_price,
-                                "entry_reason": "买入",
-                                "stop_price": entry_stop,
-                                "anchor_price": valley_price,
-                                "anchor_time": valley_time,
-                                "anchor_index": valley_idx,
-                                "anchor_kind": "valley",
-                                "retest_time": retest_time,
-                                "retest_index": retest_index,
-                                "retest_price": retest_price,
-                                "retest_high": retest_high,
-                            }
-                            # 进入持仓，继续后续K线以标记卖点
+                        if first_vol_idx is None:
+                            bullish_ok = (not self.confirm_bullish_candle) or (close_price > open_price)
+                            base_vol = post_retest_min(idx, retest_index) if retest_index is not None else avgv
+                            vol_ok = True if base_vol <= 0 else (vol >= base_vol * self.vol_factor_first)
+                            above_retest = retest_price is None or close_price > retest_price
+                            # 放宽首阳位置：回踩确认后，首阳只需在回踩价之上且未跌破止损
+                            in_play = (close_price > stop_price) and above_retest
+                            if bullish_ok and vol_ok and in_play:
+                                first_vol_idx = idx
+                                first_vol_time = time_value
+                                first_vol_price = close_price
+                                continue
+                        else:
+                            first_close = float(candles[first_vol_idx].get("close", 0) or 0)
+                            first_low = float(candles[first_vol_idx].get("low", first_close) or 0)
+                            # 首阳后若再跌破回踩价，放弃本次回踩监控
+                            if retest_price is not None and low_price < retest_price:
+                                break
+                            if not pullback_seen:
+                                pullback_seen = (close_price < first_close * (1.0 - self.pullback_pct)) or (low_price < first_low * (1.0 - self.pullback_pct)) or (idx - first_vol_idx >= 2)
+                                continue
+                            bullish_ok = (not self.confirm_bullish_candle) or (close_price > open_price)
+                            base_vol = post_retest_min(idx, retest_index) if retest_index is not None else avgv
+                            vol_ok = True if base_vol <= 0 else (vol >= base_vol * self.vol_factor_second)
+                            above_retest = retest_price is None or close_price > retest_price
+                            if bullish_ok and vol_ok and close_price > stop_price and above_retest:
+                                second_vol_time = time_value
+                                second_vol_price = close_price
+                                second_vol_index = idx
+                                base_for_stop = retest_price if retest_price is not None else valley_price
+                                entry_stop = base_for_stop * 0.98 if base_for_stop is not None else stop_price
+                                active_entry = {
+                                    "entry_time": time_value,
+                                    "entry_index": idx,
+                                    "entry_price": close_price,
+                                    "entry_reason": "倍量买入",
+                                    "stop_price": entry_stop,
+                                    "anchor_price": valley_price,
+                                    "anchor_time": valley_time,
+                                    "anchor_index": valley_idx,
+                                    "anchor_kind": "valley",
+                                    "retest_time": retest_time,
+                                    "retest_index": retest_index,
+                                    "retest_price": retest_price,
+                                    "retest_high": retest_high,
+                                    "first_vol_index": first_vol_idx,
+                                    "first_vol_time": first_vol_time,
+                                    "first_vol_price": first_vol_price,
+                                    "second_vol_index": second_vol_index,
+                                    "second_vol_time": second_vol_time,
+                                    "second_vol_price": second_vol_price,
+                                }
                     continue
 
-                # 管理持仓
                 if low_price <= active_entry["stop_price"]:
-                    trades.append(
-                        {
-                            **active_entry,
-                            "exit_time": time_value,
-                            "exit_index": idx,
-                            "exit_price": active_entry["stop_price"],
-                            "exit_reason": "止损卖出",
-                        }
-                    )
+                    trades.append({**active_entry, "exit_time": time_value, "exit_index": idx, "exit_price": active_entry["stop_price"], "exit_reason": "止损卖出"})
                     active_entry = None
                     break
-
-                target_price = active_entry.get("target_price")
-                # 动态回撤止盈：创出高点后回撤超过配置比例则卖出
                 if drawdown_take_profit > 0:
                     active_entry.setdefault("max_price_seen", active_entry["entry_price"])
                     max_price_seen = max(active_entry["max_price_seen"], high_price)
                     active_entry["max_price_seen"] = max_price_seen
                     if max_price_seen > 0 and close_price <= max_price_seen * (1.0 - drawdown_take_profit):
-                        trades.append(
-                            {
-                                **active_entry,
-                                "exit_time": time_value,
-                                "exit_index": idx,
-                                "exit_price": close_price,
-                                "exit_reason": "回撤止盈卖出",
-                            }
-                        )
+                        trades.append({**active_entry, "exit_time": time_value, "exit_index": idx, "exit_price": close_price, "exit_reason": "回撤止盈卖出"})
                         active_entry = None
                         break
                 if upper_shadow_pct > 0:
                     body_top = max(open_price, close_price)
                     upper_shadow_len = max(0.0, high_price - body_top)
                     if body_top > 0 and (upper_shadow_len / body_top) >= upper_shadow_pct:
-                        trades.append(
-                            {
-                                **active_entry,
-                                "exit_time": time_value,
-                                "exit_index": idx,
-                                "exit_price": close_price,
-                                "exit_reason": "长上影止盈卖出",
-                            }
-                        )
+                        trades.append({**active_entry, "exit_time": time_value, "exit_index": idx, "exit_price": close_price, "exit_reason": "长上影止盈卖出"})
                         active_entry = None
                         break
 
@@ -534,7 +441,6 @@ class ZigZagWavePeaksValleysStrategy:
         return trades
 
     def _trade_markers(self, trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Convert trade entries/exits to chart markers."""
         markers: List[Dict[str, Any]] = []
         for idx, trade in enumerate(trades):
             entry_time = trade.get("entry_time")
@@ -550,6 +456,14 @@ class ZigZagWavePeaksValleysStrategy:
             anchor_index = trade.get("anchor_index")
             anchor_price = trade.get("anchor_price")
             anchor_kind = trade.get("anchor_kind") or "anchor"
+            entry_reason = trade.get("entry_reason")
+            exit_reason = trade.get("exit_reason")
+            first_vol_time = trade.get("first_vol_time")
+            first_vol_index = trade.get("first_vol_index")
+            first_vol_price = trade.get("first_vol_price")
+            second_vol_time = trade.get("second_vol_time")
+            second_vol_index = trade.get("second_vol_index")
+            second_vol_price = trade.get("second_vol_price")
 
             def _time_or_index(time_value: Any, index_value: Any) -> Any:
                 return time_value if time_value is not None else index_value
@@ -571,14 +485,39 @@ class ZigZagWavePeaksValleysStrategy:
                     {
                         "id": f"retest_touch_{idx}",
                         "time": _time_or_index(retest_time, retest_index),
-                        "position": "inBar",  # 与买入点错位，避免同一根被覆盖
+                        "position": "inBar",
                         "color": "#94a3b8",
                         "shape": "circle",
                         "text": f"回踩到位 {retest_price:.2f}" if retest_price is not None else "回踩到位",
                         "price": retest_price,
                     }
                 )
+            if first_vol_time is not None or first_vol_index is not None:
+                markers.append(
+                    {
+                        "id": f"first_vol_{idx}",
+                        "time": _time_or_index(first_vol_time, first_vol_index),
+                        "position": "aboveBar",
+                        "color": "#f59e0b",
+                        "shape": "circle",
+                        "text": f"首阳放量 {first_vol_price:.2f}" if first_vol_price is not None else "首阳放量",
+                        "price": first_vol_price,
+                    }
+                )
+            if second_vol_time is not None or second_vol_index is not None:
+                markers.append(
+                    {
+                        "id": f"second_vol_{idx}",
+                        "time": _time_or_index(second_vol_time, second_vol_index),
+                        "position": "aboveBar",
+                        "color": "#fb923c",
+                        "shape": "triangle",
+                        "text": f"二次放量 {second_vol_price:.2f}" if second_vol_price is not None else "二次放量",
+                        "price": second_vol_price,
+                    }
+                )
             if entry_time is not None or entry_index is not None:
+                buy_text = entry_reason if isinstance(entry_reason, str) and entry_reason else (f"买入 {entry_price:.2f}" if entry_price is not None else "买入")
                 markers.append(
                     {
                         "id": f"retest_entry_{idx}",
@@ -586,12 +525,12 @@ class ZigZagWavePeaksValleysStrategy:
                         "position": "belowBar",
                         "color": "#0ea5e9",
                         "shape": "triangle",
-                        "text": f"买入 {entry_price:.2f}" if entry_price is not None else "买入",
+                        "text": buy_text,
                         "price": entry_price,
                     }
                 )
-            if (exit_time is not None) or (exit_index is not None):
-                reason = trade.get("exit_reason") or "卖出"
+            if exit_time is not None or exit_index is not None:
+                reason = exit_reason or "卖出"
                 markers.append(
                     {
                         "id": f"retest_exit_{idx}",
@@ -606,7 +545,6 @@ class ZigZagWavePeaksValleysStrategy:
         return markers
 
     def _retest_strokes(self, trades: List[Dict[str, Any]], candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Build line segments from anchor（波谷或支撑）到回踩触发点（回踩到位的K线），而非买入执行点."""
         strokes: List[Dict[str, Any]] = []
         for idx, trade in enumerate(trades):
             anchor_time = trade.get("anchor_time")
@@ -620,14 +558,12 @@ class ZigZagWavePeaksValleysStrategy:
             if retest_time is None and retest_index is None:
                 continue
             if isinstance(anchor_index, int) and isinstance(retest_index, int) and anchor_index > retest_index:
-                # 若锚点索引在回踩之后，认为数据不可靠，跳过该连线
                 continue
             start_time = anchor_time if anchor_time is not None else anchor_index
             end_time = retest_index if retest_index is not None else retest_time
             start_price = anchor_price
             if start_price is None and isinstance(anchor_index, int) and 0 <= anchor_index < len(candles):
                 start_price = float(candles[anchor_index].get("close", 0) or 0)
-            # 线条终点使用回踩触发K线的收盘价
             end_price = retest_price
             if end_price is None and isinstance(retest_index, int) and 0 <= retest_index < len(candles):
                 end_price = float(candles[retest_index].get("close", 0) or 0)
@@ -645,9 +581,6 @@ class ZigZagWavePeaksValleysStrategy:
         return strokes
 
     def _major_wave_strokes(self, candles: List[Dict[str, Any]], major_pivots: List[Dict[str, Any]], fallback_pivots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """将主波段的三个关键点（谷-峰-谷）用折线连接，便于可视化主波段范围。
-        若大级别枢轴不足，则退回普通枢轴绘制，确保预览能看到主波段连线。
-        """
         strokes: List[Dict[str, Any]] = []
         pivots_to_use = major_pivots if len(major_pivots) >= 2 else fallback_pivots
         if len(pivots_to_use) < 2:
@@ -661,7 +594,6 @@ class ZigZagWavePeaksValleysStrategy:
             peak_idx = second["index"]
             if valley_idx >= peak_idx:
                 continue
-            # 找到峰后的下一个大级别谷，若没有，则用末尾
             next_valley_idx = None
             for j in range(i + 2, len(pivots_to_use)):
                 if pivots_to_use[j]["type"] == "valley":
@@ -686,42 +618,14 @@ class ZigZagWavePeaksValleysStrategy:
             v_time, v_price = _pt(valley_idx, "valley")
             p_time, p_price = _pt(peak_idx, "peak")
             e_time, e_price = _pt(end_idx, "valley")
-            strokes.append(
-                {
-                    "startTime": v_time,
-                    "endTime": p_time,
-                    "startPrice": v_price,
-                    "endPrice": p_price,
-                    "direction": 1,
-                    "kind": "major_wave",
-                    "color": "#f59e0b",
-                    "lineWidth": 2,
-                    "lineStyle": "solid",
-                    "label": f"主波段{len(strokes)+1}-1",
-                }
-            )
-            strokes.append(
-                {
-                    "startTime": p_time,
-                    "endTime": e_time,
-                    "startPrice": p_price,
-                    "endPrice": e_price,
-                    "direction": -1,
-                    "kind": "major_wave",
-                    "color": "#f59e0b",
-                    "lineWidth": 2,
-                    "lineStyle": "solid",
-                    "label": f"主波段{len(strokes)//2}-2",
-                }
-            )
+            strokes.append({"startTime": v_time, "endTime": p_time, "startPrice": v_price, "endPrice": p_price, "direction": 1, "kind": "major_wave", "color": "#f59e0b", "lineWidth": 2, "lineStyle": "solid", "label": f"主波段{len(strokes)+1}-1"})
+            strokes.append({"startTime": p_time, "endTime": e_time, "startPrice": p_price, "endPrice": e_price, "direction": -1, "kind": "major_wave", "color": "#f59e0b", "lineWidth": 2, "lineStyle": "solid", "label": f"主波段{len(strokes)//2}-2"})
         return strokes
 
 
-
-def run_zigzag_workbench(context: "StrategyContext") -> "StrategyRunResult":
+def run_zigzag_volume_double_long_workbench(context: "StrategyContext") -> "StrategyRunResult":
     if StrategyContext is None or StrategyRunResult is None:
         raise RuntimeError("Strategy runtime not available.")
-
     params = context.params or {}
 
     def _get_float(key: str, default: float) -> float:
@@ -736,36 +640,30 @@ def run_zigzag_workbench(context: "StrategyContext") -> "StrategyRunResult":
         except (TypeError, ValueError):
             return default
 
-    min_reversal_pct = _get_float("min_reversal_pct", 5.0)
-    major_reversal_pct = _get_float("major_reversal_pct", 12.0)
-    pivot_depth = _get_int("pivot_depth", 1)
-    retest_tolerance_pct = _get_float("retest_tolerance_pct", 1.5)
-    stop_loss_pct = _get_float("stop_loss_pct", 2.0)
-    drawdown_take_profit_pct = _get_float("drawdown_take_profit_pct", 7.0)
-    long_upper_shadow_pct = _get_float("long_upper_shadow_pct", 3.0)
-    confirm_break_level = bool(_get_int("confirm_break_level", 1))
-    confirm_bullish_candle = bool(_get_int("confirm_bullish_candle", 1))
-    support_lookback_bars = _get_int("support_lookback_bars", 180)
-    support_band_pct = _get_float("support_band_pct", 1.0)
-    strategy = ZigZagWavePeaksValleysStrategy(
-        min_reversal_pct=min_reversal_pct,
-        major_reversal_pct=major_reversal_pct,
-        pivot_depth=pivot_depth,
-        retest_tolerance_pct=retest_tolerance_pct,
-        stop_loss_pct=stop_loss_pct,
-        drawdown_take_profit_pct=drawdown_take_profit_pct,
-        long_upper_shadow_pct=long_upper_shadow_pct,
-        confirm_break_level=confirm_break_level,
-        confirm_bullish_candle=confirm_bullish_candle,
-        support_lookback_bars=support_lookback_bars,
-        support_band_pct=support_band_pct,
+    strategy = ZigZagVolumeDoubleLongStrategy(
+        min_reversal_pct=_get_float("min_reversal_pct", 5.0),
+        major_reversal_pct=_get_float("major_reversal_pct", 12.0),
+        pivot_depth=_get_int("pivot_depth", 1),
+        retest_tolerance_pct=_get_float("retest_tolerance_pct", 1.5),
+        stop_loss_pct=_get_float("stop_loss_pct", 2.0),
+        drawdown_take_profit_pct=_get_float("drawdown_take_profit_pct", 7.0),
+        long_upper_shadow_pct=_get_float("long_upper_shadow_pct", 3.0),
+        confirm_break_level=bool(_get_int("confirm_break_level", 1)),
+        confirm_bullish_candle=bool(_get_int("confirm_bullish_candle", 1)),
+        support_lookback_bars=_get_int("support_lookback_bars", 180),
+        support_band_pct=_get_float("support_band_pct", 1.0),
+        volume_factor_first=_get_float("volume_factor_first", 2.0),
+        volume_factor_second=_get_float("volume_factor_second", 2.0),
+        avg_volume_window=_get_int("avg_volume_window", 20),
+        post_retest_avg_window=_get_int("post_retest_avg_window", 3),
+        pullback_pct=_get_float("pullback_pct", 1.0),
     )
     raw_result = strategy.scan_current_symbol(context.db_path, context.table_name)
-    return serialize_run_result("zigzag_wave_peaks_valleys", raw_result)
+    return serialize_run_result("zigzag_volume_double_long", raw_result)
 
 
 __all__ = [
-    "ZigZagWavePeaksValleysStrategy",
-    "ZIGZAG_STRATEGY_PARAMETERS",
-    "run_zigzag_workbench",
+    "ZigZagVolumeDoubleLongStrategy",
+    "ZIGZAG_VOLUME_DOUBLE_LONG_PARAMETERS",
+    "run_zigzag_volume_double_long_workbench",
 ]

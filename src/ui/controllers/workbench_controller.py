@@ -14,9 +14,21 @@ try:
         ZIGZAG_STRATEGY_PARAMETERS,
         run_zigzag_workbench,
     )
+    from ...strategies.zigzag_double_retest import (
+        ZIGZAG_DOUBLE_RETEST_PARAMETERS,
+        run_zigzag_double_retest_workbench,
+    )
+    from ...strategies.zigzag_volume_double_long import (
+        ZIGZAG_VOLUME_DOUBLE_LONG_PARAMETERS,
+        run_zigzag_volume_double_long_workbench,
+    )
 except Exception:  # pragma: no cover - optional import
     ZIGZAG_STRATEGY_PARAMETERS = []
     run_zigzag_workbench = None
+    ZIGZAG_DOUBLE_RETEST_PARAMETERS = []
+    run_zigzag_double_retest_workbench = None
+    ZIGZAG_VOLUME_DOUBLE_LONG_PARAMETERS = []
+    run_zigzag_volume_double_long_workbench = None
 
 try:
     from ...strategies.chan_theory_strategy import (
@@ -246,6 +258,10 @@ class StrategyWorkbenchController(QtCore.QObject):
             end_date=None,
             mode="preview",
         )
+        # 先清空旧标记，避免策略切换时残留。
+        self.kline_controller.set_markers([], [])
+        self.kline_controller.render_from_database(table, [], [])
+
         result = self.strategy_registry.run_strategy(strategy_key, context)
         if result:
             self.kline_controller.set_markers(list(result.markers), list(result.overlays))
@@ -291,12 +307,16 @@ class StrategyWorkbenchController(QtCore.QObject):
             if definition:
                 definition_title = definition.title
         title = definition_title or strategy_key
+        # 过多标注会让预览卡顿/无法切换，做适度截断
+        max_markers = 500
         base_markers = list(result.markers)
         preview_markers = augment_markers_with_trade_signals(
             base_markers,
             result.extra_data,
             strategy_key=strategy_key,
         )
+        if len(preview_markers) > max_markers:
+            preview_markers = preview_markers[-max_markers:]
         try:
             html = render_echarts_preview(
                 candles=candles,
@@ -340,6 +360,38 @@ class StrategyWorkbenchController(QtCore.QObject):
                     category="形态识别",
                     parameters=zigzag_parameters,
                     tags=["形态识别", "波动策略"],
+                )
+            )
+
+        if run_zigzag_double_retest_workbench is not None and not self.strategy_registry.get("zigzag_double_retest"):
+            double_params: List[StrategyParameter] = []
+            if ZIGZAG_DOUBLE_RETEST_PARAMETERS:
+                double_params = list(ZIGZAG_DOUBLE_RETEST_PARAMETERS)
+            definitions.append(
+                StrategyDefinition(
+                    key="zigzag_double_retest",
+                    title="ZigZag双回踩再上车",
+                    description="大波段回踩后，再出现二次回踩并反弹的买入版本。",
+                    handler=run_zigzag_double_retest_workbench,
+                    category="形态识别",
+                    parameters=double_params,
+                    tags=["形态识别", "双回踩"],
+                )
+            )
+
+        if run_zigzag_volume_double_long_workbench is not None and not self.strategy_registry.get("zigzag_volume_double_long"):
+            vol_params: List[StrategyParameter] = []
+            if ZIGZAG_VOLUME_DOUBLE_LONG_PARAMETERS:
+                vol_params = list(ZIGZAG_VOLUME_DOUBLE_LONG_PARAMETERS)
+            definitions.append(
+                StrategyDefinition(
+                    key="zigzag_volume_double_long",
+                    title="ZigZag倍量二次入场",
+                    description="主波段回踩后出现首根倍量阳线，再回调后二次倍量阳线买入。",
+                    handler=run_zigzag_volume_double_long_workbench,
+                    category="形态识别",
+                    parameters=vol_params,
+                    tags=["形态识别", "成交量"],
                 )
             )
 

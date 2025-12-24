@@ -185,6 +185,16 @@
           if (low != null) lines.push(`最低：${low}`);
           if (close != null) lines.push(`收盘：${close}`);
           if (pct != null && Number.isFinite(pct)) lines.push(`涨跌：${Number(pct).toFixed(2)}%`);
+          const volKey = String(params[0].axisValue);
+          let volume = null;
+          if (volumeMap.has(volKey)) {
+            volume = volumeMap.get(volKey);
+          } else {
+            volume = candle.volume ?? candle.Volume ?? candle.vol ?? candle.amount ?? candle.turnover ?? null;
+          }
+          if (volume != null && Number.isFinite(Number(volume))) {
+            lines.push(`成交量：${Number(volume).toFixed(2)}`);
+          }
           return lines.join('<br/>');
         },
       },

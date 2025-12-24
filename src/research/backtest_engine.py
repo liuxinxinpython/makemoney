@@ -435,6 +435,7 @@ class BacktestEngine(QtCore.QObject):
     ) -> List[Dict[str, Any]]:
         extra = getattr(run_result, "extra_data", {}) or {}
         raw_trades = list(extra.get("trades", []) or [])
+        skip_marker_fallback = bool(extra.get("skip_marker_fallback"))
         trades: List[Dict[str, Any]] = []
 
         for raw in raw_trades:
@@ -470,6 +471,8 @@ class BacktestEngine(QtCore.QObject):
             return trades
 
         # Fallback: attempt to pair buy/sell markers when trades are missing.
+        if skip_marker_fallback:
+            return []
         markers = list(getattr(run_result, "markers", []) or [])
         return self._build_trades_from_markers(symbol, markers, price_map, start_date, end_date)
 

@@ -590,6 +590,11 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         if not definition:
             QtWidgets.QMessageBox.warning(self, '策略缺失', '请选择策略')
             return
+        # 预览前先清空旧标记，避免策略切换后残留显示
+        try:
+            self.render_markers_handler and self.render_markers_handler('', [], [])
+        except Exception:
+            pass
         params = self._collect_params()
         try:
             result = self.preview_handler(definition.key, params)
@@ -607,6 +612,11 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
             self.preview_status.setText(result.status_message or '已生成标记')
             self.chart_focus_handler()
         else:
+            # 没有结果时也刷新一次空图，确保界面清空
+            try:
+                self.render_markers_handler and self.render_markers_handler('', [], [])
+            except Exception:
+                pass
             self.preview_status.setText('未生成标记')
 
     def _run_scan(self) -> None:
@@ -834,7 +844,8 @@ class StrategyWorkbenchPanel(QtWidgets.QWidget):
         if 0 <= row < len(self.scan_results):
             table_name = self.scan_results[row].table_name
             self.load_symbol_handler(table_name)
-            self._preview_current_strategy()
+            # 延迟触发预览，确保K线已切换到选中标的
+            QtCore.QTimer.singleShot(80, self._preview_current_strategy)
 
     def _append_scan_log(self, message: str) -> None:
         self.scan_log.append(message)

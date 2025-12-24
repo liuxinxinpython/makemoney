@@ -13,6 +13,11 @@ except Exception:  # pragma: no cover - optional import
     ZigZagWavePeaksValleysStrategy = None
 
 try:
+    from ...strategies.zigzag_double_retest import ZigZagDoubleRetestStrategy  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional import
+    ZigZagDoubleRetestStrategy = None
+
+try:
     from ...rendering import ECHARTS_PREVIEW_TEMPLATE_PATH, render_echarts_preview  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - optional import
     render_echarts_preview = None
@@ -64,6 +69,13 @@ class StrategyMenuController(QtCore.QObject):
             handler=self._handle_zigzag_wave_peaks_valleys,
             requires_selector=False,
             description="使用 ZigZag 算法在图表中识别价格数据的波峰与波谷形态",
+        )
+        self._register_strategy(
+            key="zigzag_double_retest",
+            title="ZigZag双回踩版",
+            handler=self._handle_zigzag_double_retest,
+            requires_selector=False,
+            description="大波段回踩后再出现小波段回踩并反弹触发买点的扩展版",
         )
         self._rebuild_menu()
 
@@ -168,6 +180,59 @@ class StrategyMenuController(QtCore.QObject):
 
         self.status_bar.showMessage(status_message or "ZigZag 检测完成")
         self._log("ZigZag 策略执行完成")
+
+    def _handle_zigzag_double_retest(self) -> None:
+        controller = self.kline_controller
+        if controller is None or ZigZagDoubleRetestStrategy is None:
+            QtWidgets.QMessageBox.critical(self.parent_window, "策略不可用", "ZigZag 模块未正确初始化。")
+            return
+
+        current_table = controller.current_table
+        if not current_table:
+            QtWidgets.QMessageBox.warning(self.parent_window, "未选择标的", "请先选择一个标的再执行 ZigZag 检测。")
+            return
+
+        db_path = self._db_path_getter()
+        if not db_path.exists():
+            QtWidgets.QMessageBox.warning(self.parent_window, "缺少数据库", "请先选择有效的 SQLite 数据库文件。")
+            return
+
+        try:
+            strategy = ZigZagDoubleRetestStrategy()
+            result = strategy.scan_current_symbol(db_path, current_table)
+        except Exception as exc:  # pragma: no cover - interactive feedback
+            QtWidgets.QMessageBox.critical(self.parent_window, "ZigZag 双回踩检测失败", str(exc))
+            self._log(f"ZigZag 双回踩检测失败: {exc}")
+            return
+
+        if not result:
+            QtWidgets.QMessageBox.information(
+                self.parent_window,
+                "未检出双回踩形态",
+                "当前标的未检测到符合“大波段回踩+小波段回踩”条件的形态。",
+            )
+            controller.set_markers([], [])
+            controller.render_from_database(current_table)
+            self.status_bar.showMessage("ZigZag 双回踩检测完成 (无标记)")
+            return
+        extra_data: Dict[str, Any] = {}
+        if isinstance(result, dict):
+            markers = list(result.get("markers", []) or [])
+            overlays = list(result.get("overlays", []) or [])
+            status_message = result.get("status_message", "")
+            extra_data = dict(result.get("extra_data", {}) or {})
+        else:
+            markers = list(getattr(result, "markers", []) or [])
+            overlays = list(getattr(result, "overlays", []) or [])
+            status_message = getattr(result, "status_message", "")
+            extra_data = dict(getattr(result, "extra_data", {}) or {})
+
+        controller.set_markers(markers, overlays)
+        controller.render_from_database(current_table)
+        self._show_echarts_preview("ZigZag双回踩版", markers, overlays, extra_data)
+
+        self.status_bar.showMessage(status_message or "ZigZag 双回踩检测完成")
+        self._log("ZigZag 双回踩策略执行完成")
 
     def _ensure_echarts_dialog(self) -> Optional[EChartsPreviewDialog]:
         if EChartsPreviewDialog is None or render_echarts_preview is None:
